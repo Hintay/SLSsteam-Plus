@@ -1,24 +1,24 @@
-// Smoke test for LuaLoader T1+T2+T6+T7.
+// Smoke test for LuaLoader.
 // Self-contained: no SLSsteam internal headers, no libmem, no yaml-cpp, no libcurl.
-// Inlines the same Lua VM setup logic and real T2/T6/T7 binding implementations
+// Inlines the same Lua VM setup logic and real binding implementations
 // as LuaLoader.cpp to verify:
-//   T1: The Lua VM can be created.
-//   T1: The case-insensitive __index metamethod resolves mixed-case names.
-//   T1: All 14 bindings are reachable without "attempt to call a nil value".
-//   T2: addappid / addtoken / setmanifestid populate the in-process tables.
-//   T2: addappid with a 64-hex-char key stores 32 decoded bytes.
-//   T6: Provider URL {gid} substitution produces correct strings.
-//   T6: parsePlainUint / parseSteamRunJson parse and validate correctly.
-//   T6: fetch_manifest_code_ex callback selection (branch 1) is invoked first
+//   The Lua VM can be created.
+//   The case-insensitive __index metamethod resolves mixed-case names.
+//   All 14 bindings are reachable without "attempt to call a nil value".
+//   addappid / addtoken / setmanifestid populate the in-process tables.
+//   addappid with a 64-hex-char key stores 32 decoded bytes.
+//   Provider URL {gid} substitution produces correct strings.
+//   parsePlainUint / parseSteamRunJson parse and validate correctly.
+//   fetch_manifest_code_ex callback selection (branch 1) is invoked first
 //       when the ref is set; returns the correct code.
-//   T6: fetch_manifest_code callback (branch 2) is used when _ex is not set.
-//   T6: Lua stack is balanced across pcall / result-read.
-//   T6: http_get accepts an optional headers table arg (smoke stub).
-//   T6: http_post is now a real binding (validates 2 required args in smoke).
-//   T7: setappticket hex-decode, SteamID extraction from offset 8 (little-endian).
-//   T7: setappticket malformed input is silently skipped (warn+skip, no crash).
-//   T7: seteticket hex-decode stored with steamId=0.
-//   T7: getAppTicket / getEncTicket query APIs return correct entries.
+//   fetch_manifest_code callback (branch 2) is used when _ex is not set.
+//   Lua stack is balanced across pcall / result-read.
+//   http_get accepts an optional headers table arg (smoke stub).
+//   http_post is now a real binding (validates 2 required args in smoke).
+//   setappticket hex-decode, SteamID extraction from offset 8 (little-endian).
+//   setappticket malformed input is silently skipped (warn+skip, no crash).
+//   seteticket hex-decode stored with steamId=0.
+//   getAppTicket / getEncTicket query APIs return correct entries.
 
 #include <cassert>
 #include <cctype>
@@ -46,7 +46,7 @@ extern "C" {
 
 namespace SmokeLoader {
 
-// Depot key table: addappid(id) creates an empty OST-compatible membership
+// Depot key table: addappid(id) creates an empty membership
 // marker; addappid(id, ..., hexkey) stores 32 decoded key bytes.
 static std::unordered_map<uint32_t, std::vector<uint8_t>> g_depotKeys;
 // Manifest GID+size overrides.
@@ -57,7 +57,7 @@ static std::unordered_set<uint32_t> g_ownedAppIds;
 // App access tokens.
 static std::unordered_map<uint32_t, uint64_t> g_appTokens;
 
-// T7: In-memory ticket tables (mirrors LuaLoader::appTickets / encTickets).
+// In-memory ticket tables (mirrors LuaLoader::appTickets / encTickets).
 struct LuaTicket { uint32_t steamId; std::vector<uint8_t> bytes; };
 static std::unordered_map<uint32_t, LuaTicket> g_appTickets;
 static std::unordered_map<uint32_t, LuaTicket> g_encTickets;
@@ -93,7 +93,7 @@ static bool parseHex64(const char* hex, std::vector<uint8_t>& out) {
     return true;
 }
 
-// T7: parse variable-length hex string into bytes (mirrors LuaLoader::parseHexBytes).
+// parse variable-length hex string into bytes (mirrors LuaLoader::parseHexBytes).
 static bool parseHexBytes(const char* hex, size_t hexLen, std::vector<uint8_t>& out) {
     if (hexLen == 0 || hexLen % 2 != 0) return false;
     std::vector<uint8_t> result;
@@ -118,7 +118,7 @@ static bool parseU64Decimal(const char* str, uint64_t& out) {
     return true;
 }
 
-// ── T6: Pure-logic helpers inlined from ManifestProvider + LuaLoader ─────
+// ── Pure-logic helpers inlined from ManifestProvider + LuaLoader ─────
 
 // Build a URL by replacing "{gid}" in tmpl with the decimal value of gid.
 // (Mirrors ManifestProvider::buildUrl — inlined here to keep smoke self-contained.)
@@ -197,7 +197,7 @@ static bool readU64FromTop(lua_State* L, uint64_t& out) {
     return false;
 }
 
-// ── Real binding implementations (mirrors LuaLoader.cpp T2 logic) ────────
+// ── Real binding implementations (mirrors LuaLoader.cpp logic) ────────
 
 static int impl_addappid(lua_State* L) {
     int argc = lua_gettop(L);
@@ -285,7 +285,7 @@ static int impl_setmanifestid(lua_State* L) {
     return 0;
 }
 
-// T6: real ref-capturing implementation (mirrors LuaLoader).
+// real ref-capturing implementation (mirrors LuaLoader).
 static int impl_fetch_manifest_code(lua_State* L) {
     if (lua_gettop(L) < 1 || !lua_isfunction(L, 1)) {
         lua_pushstring(L, "fetch_manifest_code: arg1 must be function");
@@ -298,7 +298,7 @@ static int impl_fetch_manifest_code(lua_State* L) {
     return 0;
 }
 
-// T6: real ref-capturing implementation (mirrors LuaLoader).
+// real ref-capturing implementation (mirrors LuaLoader).
 static int impl_fetch_manifest_code_ex(lua_State* L) {
     if (lua_gettop(L) < 1 || !lua_isfunction(L, 1)) {
         lua_pushstring(L, "fetch_manifest_code_ex: arg1 must be function");
@@ -311,7 +311,7 @@ static int impl_fetch_manifest_code_ex(lua_State* L) {
     return 0;
 }
 
-// T6: http_get(url [, headers_table]) → (body, status)
+// http_get(url [, headers_table]) → (body, status)
 // Smoke: parse headers table arg to verify no crash, then return stub response.
 static int impl_http_get(lua_State* L) {
     if (lua_gettop(L) < 1 || !lua_isstring(L, 1)) {
@@ -325,7 +325,7 @@ static int impl_http_get(lua_State* L) {
     return 2;
 }
 
-// T6: http_post(url, body [, headers_table]) → (response|nil, status)
+// http_post(url, body [, headers_table]) → (response|nil, status)
 // Smoke: validate required args, return stub (nil, 200).
 static int impl_http_post(lua_State* L) {
     int argc = lua_gettop(L);
@@ -343,7 +343,7 @@ static int impl_http_post(lua_State* L) {
     return 2;
 }
 
-// T7: real setappticket implementation (mirrors LuaLoader::impl_setappticket).
+// real setappticket implementation (mirrors LuaLoader::impl_setappticket).
 static int impl_setappticket(lua_State* L) {
     int argc = lua_gettop(L);
     if (argc < 2 || !lua_isinteger(L, 1) || !lua_isstring(L, 2)) {
@@ -379,7 +379,7 @@ static int impl_setappticket(lua_State* L) {
     return 0;
 }
 
-// T7: real seteticket implementation (mirrors LuaLoader::impl_seteticket).
+// real seteticket implementation (mirrors LuaLoader::impl_seteticket).
 static int impl_seteticket(lua_State* L) {
     int argc = lua_gettop(L);
     if (argc < 2 || !lua_isinteger(L, 1) || !lua_isstring(L, 2)) {
@@ -406,7 +406,7 @@ static int impl_seteticket(lua_State* L) {
     return 0;
 }
 
-// Remaining stubs (T8).
+// Remaining stubs.
 static int s_stub(lua_State*) { return 0; }
 
 // ── Case-insensitive VM helpers ───────────────────────────────────────────
@@ -494,8 +494,8 @@ static void init(const std::string& scanDir) {
     }
 }
 
-// ── T6: fetchManifestCode logic (inlined mirror of LuaLoader::fetchManifestCode) ──
-// Used by T6 C-level assertions; no network calls are made.
+// ── fetchManifestCode logic (inlined mirror of LuaLoader::fetchManifestCode) ──
+// Used by C-level assertions; no network calls are made.
 static bool fetchManifestCode(uint32_t appId, uint32_t depotId,
                                uint64_t gid, uint64_t& outCode)
 {
@@ -538,7 +538,7 @@ static bool fetchManifestCode(uint32_t appId, uint32_t depotId,
 
 } // namespace SmokeLoader
 
-// ── T2: Self-contained refcount bookkeeping mirror ───────────────────────────
+// ── Self-contained refcount bookkeeping mirror ───────────────────────────
 
 struct SmokeFileTrack {
     std::unordered_map<std::string, std::unordered_set<uint32_t>> fileIds;
@@ -571,7 +571,7 @@ static void test_refcount() {
     std::printf("test_refcount OK\n");
 }
 
-// ── Task 3: unloadFile removes a file's ids from ALL maps ────────────────────
+// ── unloadFile removes a file's ids from ALL maps ────────────────────
 static void test_unload_full_removal() {
     std::unordered_set<uint32_t> owned{100, 200};
     std::unordered_map<uint32_t, int> keys{{100,1},{200,1}}, tokens{{200,7}};
@@ -634,11 +634,11 @@ int main() {
     const char* tmp = std::getenv("TMPDIR");
     const std::string luaDir = std::string(tmp ? tmp : "/tmp") + "/sls_smoke_lua";
 
-    printf("[smoke] LuaLoader T1+T2+T6 smoke test\n");
+    printf("[smoke] LuaLoader smoke test\n");
     printf("[smoke] script dir: %s\n", luaDir.c_str());
 
-    // ── T6 pure-logic checks (no Lua VM, no network) ───────────────────────
-    printf("[smoke] --- T6 pure-logic checks ---\n");
+    // ── pure-logic checks (no Lua VM, no network) ───────────────────────
+    printf("[smoke] --- pure-logic checks ---\n");
 
     // URL template substitution.
     {
@@ -655,22 +655,22 @@ int main() {
                       "http://gmrc.wudrm.com/manifest/%llu",
                       static_cast<unsigned long long>(gid));
         if (wu != expected) {
-            fprintf(stderr, "[smoke] FAIL T6: wudrm URL wrong: '%s' (expected '%s')\n",
+            fprintf(stderr, "[smoke] FAIL: wudrm URL wrong: '%s' (expected '%s')\n",
                     wu.c_str(), expected);
             SmokeLoader::g_had_error = true;
         } else {
-            printf("[smoke] T6 PASS: wudrm URL: %s\n", wu.c_str());
+            printf("[smoke] PASS: wudrm URL: %s\n", wu.c_str());
         }
 
         std::snprintf(expected, sizeof(expected),
                       "https://manifest.steam.run/api/manifest/%llu",
                       static_cast<unsigned long long>(gid));
         if (sr != expected) {
-            fprintf(stderr, "[smoke] FAIL T6: steamrun URL wrong: '%s' (expected '%s')\n",
+            fprintf(stderr, "[smoke] FAIL: steamrun URL wrong: '%s' (expected '%s')\n",
                     sr.c_str(), expected);
             SmokeLoader::g_had_error = true;
         } else {
-            printf("[smoke] T6 PASS: steamrun URL: %s\n", sr.c_str());
+            printf("[smoke] PASS: steamrun URL: %s\n", sr.c_str());
         }
     }
 
@@ -679,30 +679,30 @@ int main() {
         uint64_t v = 0;
         // Normal decimal.
         if (!SmokeLoader::parsePlainUint("9999999999999999999", v) || v != 9999999999999999999ULL) {
-            fprintf(stderr, "[smoke] FAIL T6: parsePlainUint large value\n");
+            fprintf(stderr, "[smoke] FAIL: parsePlainUint large value\n");
             SmokeLoader::g_had_error = true;
         }
         // Trailing whitespace (wudrm bodies often have a newline).
         if (!SmokeLoader::parsePlainUint("123456789\n", v) || v != 123456789ULL) {
-            fprintf(stderr, "[smoke] FAIL T6: parsePlainUint trailing newline\n");
+            fprintf(stderr, "[smoke] FAIL: parsePlainUint trailing newline\n");
             SmokeLoader::g_had_error = true;
         }
         // Zero — should parse but caller must reject (parsePlainUint itself allows 0).
         if (!SmokeLoader::parsePlainUint("0", v) || v != 0) {
-            fprintf(stderr, "[smoke] FAIL T6: parsePlainUint zero\n");
+            fprintf(stderr, "[smoke] FAIL: parsePlainUint zero\n");
             SmokeLoader::g_had_error = true;
         }
         // Empty → false.
         if (SmokeLoader::parsePlainUint("", v)) {
-            fprintf(stderr, "[smoke] FAIL T6: parsePlainUint empty should be false\n");
+            fprintf(stderr, "[smoke] FAIL: parsePlainUint empty should be false\n");
             SmokeLoader::g_had_error = true;
         }
         // Non-digit → false.
         if (SmokeLoader::parsePlainUint("abc", v)) {
-            fprintf(stderr, "[smoke] FAIL T6: parsePlainUint 'abc' should be false\n");
+            fprintf(stderr, "[smoke] FAIL: parsePlainUint 'abc' should be false\n");
             SmokeLoader::g_had_error = true;
         }
-        printf("[smoke] T6 PASS: parsePlainUint edge cases\n");
+        printf("[smoke] PASS: parsePlainUint edge cases\n");
     }
 
     // parseSteamRunJson: valid JSON and missing-key cases.
@@ -711,31 +711,31 @@ int main() {
         const std::string_view goodJson =
             R"({"status":"ok","content":"7654321098765432109"})";
         if (!SmokeLoader::parseSteamRunJson(goodJson, v) || v != 7654321098765432109ULL) {
-            fprintf(stderr, "[smoke] FAIL T6: parseSteamRunJson good JSON\n");
+            fprintf(stderr, "[smoke] FAIL: parseSteamRunJson good JSON\n");
             SmokeLoader::g_had_error = true;
         }
         const std::string_view noContent = R"({"status":"ok"})";
         if (SmokeLoader::parseSteamRunJson(noContent, v)) {
-            fprintf(stderr, "[smoke] FAIL T6: parseSteamRunJson no-content-key should be false\n");
+            fprintf(stderr, "[smoke] FAIL: parseSteamRunJson no-content-key should be false\n");
             SmokeLoader::g_had_error = true;
         }
         const std::string_view garbage = "not json at all";
         if (SmokeLoader::parseSteamRunJson(garbage, v)) {
-            fprintf(stderr, "[smoke] FAIL T6: parseSteamRunJson garbage should be false\n");
+            fprintf(stderr, "[smoke] FAIL: parseSteamRunJson garbage should be false\n");
             SmokeLoader::g_had_error = true;
         }
-        printf("[smoke] T6 PASS: parseSteamRunJson edge cases\n");
+        printf("[smoke] PASS: parseSteamRunJson edge cases\n");
     }
 
-    // ── T1+T2 Lua script test ──────────────────────────────────────────────
-    printf("[smoke] --- T1+T2+T6 Lua script checks ---\n");
+    // ── Lua script test ──────────────────────────────────────────────
+    printf("[smoke] --- Lua script checks ---\n");
     std::filesystem::create_directories(luaDir);
     {
         std::ofstream f(luaDir + "/test.lua");
         if (!f) { fprintf(stderr, "[smoke] cannot write test.lua\n"); return 1; }
 
-        // T1: mixed-case binding reachability + T2 table population.
-        f << "-- test.lua: T1 case-insensitive reachability + T2+T6 bindings\n";
+        // mixed-case binding reachability + table population.
+        f << "-- test.lua: case-insensitive reachability + bindings\n";
 
         // addappid: basic (inserts into ownedAppIds and an empty depotKeys marker)
         f << "AddAppId(12345)\n";
@@ -761,7 +761,7 @@ int main() {
         // setmanifestid: mixed case
         f << "setManifestID(11111, \"3333333333333333\")\n";
 
-        // T6: fetch_manifest_code_ex registers a callback that returns a known code
+        // fetch_manifest_code_ex registers a callback that returns a known code
         // when called with (appId=1, depotId=2, gid=999).
         // Use 9000000000000000001 — fits in Lua 5.4 integer (must be < 2^63).
         f << "fetch_manifest_code_ex(function(app, depot, gid)\n";
@@ -770,21 +770,21 @@ int main() {
         f << "  return nil\n";
         f << "end)\n";
 
-        // T6: also register a fetch_manifest_code (branch 2) that returns a
+        // also register a fetch_manifest_code (branch 2) that returns a
         // different sentinel — should NOT be reached while _ex is set.
         f << "fetch_manifest_code(function(gid)\n";
         f << "  return 11111111111111111\n"; // sentinel: should never be seen when _ex is set
         f << "end)\n";
 
-        // T6: http_get with optional headers table (must not crash).
+        // http_get with optional headers table (must not crash).
         f << "local body, st = HTTP_GET(\"http://example.com\", {[\"X-Test\"]=\"val\"})\n";
         f << "assert(type(st) == \"number\", \"http_get status must be number\")\n";
 
-        // T6: http_post with body and optional headers table.
+        // http_post with body and optional headers table.
         f << "local r, st2 = Http_Post(\"http://x\", \"body\", {[\"Content-Type\"]=\"text/plain\"})\n";
         f << "assert(type(st2) == \"number\", \"http_post status must be number\")\n";
 
-        // T7: setappticket with a crafted 28-byte ticket.
+        // setappticket with a crafted 28-byte ticket.
         // Byte layout (little-endian):
         //   [0..3]  = 14 00 00 00  (Size field, LE)
         //   [4..7]  = 01 00 00 00  (Version field, LE)
@@ -793,13 +793,13 @@ int main() {
         // SteamID low 32 bits = 0x01000010 = 16777232.
         // Hex: "14000000010000001000000110000001" (32) + "0000000000000000" (16) + "00000000" (8) = 56 hex = 28 bytes.
         f << "SetAppTicket(55555, \"14000000010000001000000110000001\" .. \"0000000000000000\" .. \"00000000\")\n";
-        // T7: setappticket with a too-short ticket (< 16 bytes) — steamId should be 0.
+        // setappticket with a too-short ticket (< 16 bytes) — steamId should be 0.
         f << "SetAppTicket(66666, \"deadbeef\")\n";
-        // T7: setappticket malformed hex (odd length) — should warn+skip, no crash.
+        // setappticket malformed hex (odd length) — should warn+skip, no crash.
         f << "SetAppTicket(77777, \"abc\")\n";
-        // T7: seteticket — store encrypted ticket bytes, steamId=0.
+        // seteticket — store encrypted ticket bytes, steamId=0.
         f << "SETETICKET(55555, \"cafebabe0102030405060708\")\n";
-        // T8 stub — just verify it doesn't crash.
+        // stub — just verify it doesn't crash.
         f << "SetStat(1, \"76561198000000000\")\n";
         f << "DownloadApp(1)\n";
         f << "AddNonOwnedDepot(1)\n";
@@ -811,7 +811,7 @@ int main() {
 
     SmokeLoader::init(luaDir);
 
-    // ── T2 table-population assertions ──────────────────────────────────
+    // ── table-population assertions ──────────────────────────────────
     if (!SmokeLoader::g_had_error) {
         // ownedAppIds should contain 12345, 99999, 11111
         auto& owned = SmokeLoader::g_ownedAppIds;
@@ -828,8 +828,8 @@ int main() {
             SmokeLoader::g_had_error = true;
         }
 
-        // depotKeys mirrors OST DepotKeySet membership: no-key addappid still
-        // creates an empty marker, while valid keys store 32 decoded bytes.
+        // depotKeys membership: no-key addappid still creates an empty marker,
+        // while valid keys store 32 decoded bytes.
         auto& keys = SmokeLoader::g_depotKeys;
         if (keys.find(12345) == keys.end() || !keys.at(12345).empty()) {
             fprintf(stderr, "[smoke] FAIL: depotKeys[12345] empty marker missing or non-empty\n");
@@ -905,67 +905,67 @@ int main() {
         }
     }
 
-    // ── T7: ticket table assertions ──────────────────────────────────────
-    printf("[smoke] --- T7 ticket checks ---\n");
+    // ── ticket table assertions ──────────────────────────────────────
+    printf("[smoke] --- ticket checks ---\n");
     if (!SmokeLoader::g_had_error) {
         // appTickets[55555]: 28 bytes, steamId = low 32 bits of LE uint64 at offset 8.
         // Bytes [8..15] = 0x10,0x00,0x00,0x01,0x10,0x00,0x00,0x01
         // uint64 LE = 0x0100001001000010 => low32 = 0x01000010 = 16777232
         auto& at = SmokeLoader::g_appTickets;
         if (at.find(55555) == at.end()) {
-            fprintf(stderr, "[smoke] FAIL T7: appTickets[55555] missing\n");
+            fprintf(stderr, "[smoke] FAIL: appTickets[55555] missing\n");
             SmokeLoader::g_had_error = true;
         } else {
             const auto& tkt = at.at(55555);
             if (tkt.bytes.size() != 28) {
-                fprintf(stderr, "[smoke] FAIL T7: appTickets[55555] size %zu (expected 28)\n", tkt.bytes.size());
+                fprintf(stderr, "[smoke] FAIL: appTickets[55555] size %zu (expected 28)\n", tkt.bytes.size());
                 SmokeLoader::g_had_error = true;
             } else if (tkt.steamId != 0x01000010u) {
-                fprintf(stderr, "[smoke] FAIL T7: appTickets[55555] steamId=0x%08x (expected 0x01000010)\n", tkt.steamId);
+                fprintf(stderr, "[smoke] FAIL: appTickets[55555] steamId=0x%08x (expected 0x01000010)\n", tkt.steamId);
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T7 PASS: appTickets[55555] bytes=%zu steamId=0x%08x\n",
+                printf("[smoke] PASS: appTickets[55555] bytes=%zu steamId=0x%08x\n",
                        tkt.bytes.size(), tkt.steamId);
             }
         }
 
         // appTickets[66666]: 4 bytes (< 16), steamId must be 0.
         if (at.find(66666) == at.end()) {
-            fprintf(stderr, "[smoke] FAIL T7: appTickets[66666] missing\n");
+            fprintf(stderr, "[smoke] FAIL: appTickets[66666] missing\n");
             SmokeLoader::g_had_error = true;
         } else {
             const auto& tkt = at.at(66666);
             if (tkt.steamId != 0) {
-                fprintf(stderr, "[smoke] FAIL T7: appTickets[66666] steamId=%u (expected 0 for short ticket)\n", tkt.steamId);
+                fprintf(stderr, "[smoke] FAIL: appTickets[66666] steamId=%u (expected 0 for short ticket)\n", tkt.steamId);
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T7 PASS: appTickets[66666] short ticket steamId=0\n");
+                printf("[smoke] PASS: appTickets[66666] short ticket steamId=0\n");
             }
         }
 
         // appTickets[77777]: malformed hex — should NOT be in the map (skipped).
         if (at.find(77777) != at.end()) {
-            fprintf(stderr, "[smoke] FAIL T7: appTickets[77777] should not exist (malformed hex)\n");
+            fprintf(stderr, "[smoke] FAIL: appTickets[77777] should not exist (malformed hex)\n");
             SmokeLoader::g_had_error = true;
         } else {
-            printf("[smoke] T7 PASS: appTickets[77777] absent (malformed hex correctly skipped)\n");
+            printf("[smoke] PASS: appTickets[77777] absent (malformed hex correctly skipped)\n");
         }
 
         // encTickets[55555]: "cafebabe0102030405060708" = 24 hex chars = 12 bytes, steamId=0.
         auto& et = SmokeLoader::g_encTickets;
         if (et.find(55555) == et.end()) {
-            fprintf(stderr, "[smoke] FAIL T7: encTickets[55555] missing\n");
+            fprintf(stderr, "[smoke] FAIL: encTickets[55555] missing\n");
             SmokeLoader::g_had_error = true;
         } else {
             const auto& tkt = et.at(55555);
             if (tkt.steamId != 0) {
-                fprintf(stderr, "[smoke] FAIL T7: encTickets[55555] steamId=%u (expected 0)\n", tkt.steamId);
+                fprintf(stderr, "[smoke] FAIL: encTickets[55555] steamId=%u (expected 0)\n", tkt.steamId);
                 SmokeLoader::g_had_error = true;
             } else if (tkt.bytes.size() != 12) {
-                fprintf(stderr, "[smoke] FAIL T7: encTickets[55555] bytes=%zu (expected 12)\n", tkt.bytes.size());
+                fprintf(stderr, "[smoke] FAIL: encTickets[55555] bytes=%zu (expected 12)\n", tkt.bytes.size());
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T7 PASS: encTickets[55555] bytes=%zu steamId=0\n", tkt.bytes.size());
+                printf("[smoke] PASS: encTickets[55555] bytes=%zu steamId=0\n", tkt.bytes.size());
             }
         }
 
@@ -974,43 +974,43 @@ int main() {
             auto it_a = SmokeLoader::g_appTickets.find(55555);
             const SmokeLoader::LuaTicket* pA = (it_a != SmokeLoader::g_appTickets.end()) ? &it_a->second : nullptr;
             if (!pA) {
-                fprintf(stderr, "[smoke] FAIL T7: getAppTicket(55555) returned nullptr\n");
+                fprintf(stderr, "[smoke] FAIL: getAppTicket(55555) returned nullptr\n");
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T7 PASS: getAppTicket(55555) non-null, steamId=0x%08x\n", pA->steamId);
+                printf("[smoke] PASS: getAppTicket(55555) non-null, steamId=0x%08x\n", pA->steamId);
             }
 
             auto it_e = SmokeLoader::g_encTickets.find(55555);
             const SmokeLoader::LuaTicket* pE = (it_e != SmokeLoader::g_encTickets.end()) ? &it_e->second : nullptr;
             if (!pE) {
-                fprintf(stderr, "[smoke] FAIL T7: getEncTicket(55555) returned nullptr\n");
+                fprintf(stderr, "[smoke] FAIL: getEncTicket(55555) returned nullptr\n");
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T7 PASS: getEncTicket(55555) non-null, steamId=%u\n", pE->steamId);
+                printf("[smoke] PASS: getEncTicket(55555) non-null, steamId=%u\n", pE->steamId);
             }
 
             // Miss case: unknown appId should not be found.
             auto it_miss = SmokeLoader::g_appTickets.find(99998);
             if (it_miss != SmokeLoader::g_appTickets.end()) {
-                fprintf(stderr, "[smoke] FAIL T7: getAppTicket(99998) should be null (miss)\n");
+                fprintf(stderr, "[smoke] FAIL: getAppTicket(99998) should be null (miss)\n");
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T7 PASS: getAppTicket(99998) correctly nullptr (miss)\n");
+                printf("[smoke] PASS: getAppTicket(99998) correctly nullptr (miss)\n");
             }
         }
     }
 
-    // ── T6: callback selection order assertions ──────────────────────────
-    printf("[smoke] --- T6 callback selection order ---\n");
+    // ── callback selection order assertions ──────────────────────────
+    printf("[smoke] --- callback selection order ---\n");
     if (!SmokeLoader::g_had_error) {
 
         // Verify refs were captured by the Lua script.
         if (SmokeLoader::g_fetchCodeExRef == LUA_NOREF) {
-            fprintf(stderr, "[smoke] FAIL T6: g_fetchCodeExRef not set after script\n");
+            fprintf(stderr, "[smoke] FAIL: g_fetchCodeExRef not set after script\n");
             SmokeLoader::g_had_error = true;
         }
         if (SmokeLoader::g_fetchCodeRef == LUA_NOREF) {
-            fprintf(stderr, "[smoke] FAIL T6: g_fetchCodeRef not set after script\n");
+            fprintf(stderr, "[smoke] FAIL: g_fetchCodeRef not set after script\n");
             SmokeLoader::g_had_error = true;
         }
 
@@ -1020,14 +1020,14 @@ int main() {
             uint64_t code = 0;
             bool ok = SmokeLoader::fetchManifestCode(1, 2, 999, code);
             if (!ok) {
-                fprintf(stderr, "[smoke] FAIL T6: branch1 fetchManifestCode returned false\n");
+                fprintf(stderr, "[smoke] FAIL: branch1 fetchManifestCode returned false\n");
                 SmokeLoader::g_had_error = true;
             } else if (code != 9000000000000000001ULL) {
-                fprintf(stderr, "[smoke] FAIL T6: branch1 wrong code %llu (expected 9000000000000000001)\n",
+                fprintf(stderr, "[smoke] FAIL: branch1 wrong code %llu (expected 9000000000000000001)\n",
                         (unsigned long long)code);
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T6 PASS: branch1 (fetch_manifest_code_ex) code=%llu\n",
+                printf("[smoke] PASS: branch1 (fetch_manifest_code_ex) code=%llu\n",
                        (unsigned long long)code);
             }
         }
@@ -1038,14 +1038,14 @@ int main() {
             uint64_t code = 0;
             bool ok = SmokeLoader::fetchManifestCode(1, 2, 1, code);
             if (!ok) {
-                fprintf(stderr, "[smoke] FAIL T6: branch2 fetchManifestCode returned false\n");
+                fprintf(stderr, "[smoke] FAIL: branch2 fetchManifestCode returned false\n");
                 SmokeLoader::g_had_error = true;
             } else if (code != 11111111111111111ULL) {
-                fprintf(stderr, "[smoke] FAIL T6: branch2 wrong code %llu (expected 11111111111111111)\n",
+                fprintf(stderr, "[smoke] FAIL: branch2 wrong code %llu (expected 11111111111111111)\n",
                         (unsigned long long)code);
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T6 PASS: branch2 (fetch_manifest_code) fallthrough code=%llu\n",
+                printf("[smoke] PASS: branch2 (fetch_manifest_code) fallthrough code=%llu\n",
                        (unsigned long long)code);
             }
         }
@@ -1054,10 +1054,10 @@ int main() {
         if (!SmokeLoader::g_had_error) {
             int top = lua_gettop(SmokeLoader::g_lua);
             if (top != 0) {
-                fprintf(stderr, "[smoke] FAIL T6: Lua stack not balanced after fetchManifestCode calls (top=%d)\n", top);
+                fprintf(stderr, "[smoke] FAIL: Lua stack not balanced after fetchManifestCode calls (top=%d)\n", top);
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T6 PASS: Lua stack balanced (top=0)\n");
+                printf("[smoke] PASS: Lua stack balanced (top=0)\n");
             }
         }
 
@@ -1072,10 +1072,10 @@ int main() {
             bool ok = SmokeLoader::fetchManifestCode(1, 2, 42, code);
             // No network → provider branch returns false.  That's correct.
             if (ok) {
-                fprintf(stderr, "[smoke] FAIL T6: branch3 should return false without network\n");
+                fprintf(stderr, "[smoke] FAIL: branch3 should return false without network\n");
                 SmokeLoader::g_had_error = true;
             } else {
-                printf("[smoke] T6 PASS: branch3 (provider, no network) correctly returned false\n");
+                printf("[smoke] PASS: branch3 (provider, no network) correctly returned false\n");
             }
 
             SmokeLoader::g_fetchCodeExRef = savedEx;
@@ -1083,13 +1083,13 @@ int main() {
         }
     }
 
-    // ── Task 1: incremental per-line parser ──────────────────────────────
+    // ── incremental per-line parser ──────────────────────────────
     test_incremental_parser();
 
-    // ── Task 2: per-file refcount bookkeeping ────────────────────────────
+    // ── per-file refcount bookkeeping ────────────────────────────
     test_refcount();
 
-    // ── Task 3: unloadFile full removal ──────────────────────────────────
+    // ── unloadFile full removal ──────────────────────────────────
     test_unload_full_removal();
 
     // Cleanup temp files.

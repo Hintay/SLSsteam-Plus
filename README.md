@@ -67,8 +67,6 @@ Feel free to join our [Discord](https://discord.gg/j3ZzjeV4eQ) instead.
 [OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool): Inspiration for
 the Lua configuration and manifest workflows in this hard fork.
 
-[SLScheevo](https://github.com/xamionex/SLScheevo): Used to get Achievement Schemas
-
 [h3adcr-b](https://github.com/Deadboy666/h3adcr-b): Universal SLSsteam installer & steamclient downgrader
 
 [steamnetsock-patch](https://github.com/yesyes0649/steamnetsock-patch): Makes FakeAppIds work in some games where it otherwise wouldn't

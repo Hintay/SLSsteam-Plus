@@ -75,7 +75,7 @@ std::string Ticket::getTicketPath(uint32_t appId)
 Ticket::SavedTicket Ticket::getCachedTicket(uint32_t appId)
 {
 	// Lua-provided tickets take priority over the runtime cache and disk.
-	// They live only in memory — no disk read/write; see LuaLoader T7.
+	// They live only in memory — no disk read/write.
 	const auto luaTkt = LuaLoader::getAppTicket(appId);
 	if (luaTkt)
 	{

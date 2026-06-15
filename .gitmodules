@@ -1,6 +1,3 @@
-[submodule "tools/SLScheevo"]
-	path = tools/SLScheevo
-	url = https://github.com/xamionex/SLScheevo
 [submodule "res/SLSlogos"]
 	path = res/SLSlogos
 	url = https://github.com/xamionex/SLSlogos

@@ -89,8 +89,8 @@ API: no
 #Disable cloud saves for unlocked games. Set to "no" if using CloudRedirect or similar.
 DisableCloud: yes
 
-#For Player.GetUserStats schema probes with sha_schema, default behavior: send
-#the original request unchanged. Set to "yes" to drop those probes
+#For Player.GetUserStats schema probes with sha_schema, the default sends the
+#original request unchanged. Set to "yes" to drop those probes
 #for fake-owned apps and inject a fabricated no-connection response instead.
 AchievementsSchemaProbeNoConnection: no
 
