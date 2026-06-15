@@ -1,20 +1,35 @@
+# Editor / platform noise
 .clangd
-.git
-bin
-obj
-zip
+.DS_Store
 
-# Lua 5.4 sources are fetched at build time, not committed.
-/third_party/lua/
+# Local shell / agent config
+.claude/
+.envrc
+
+# Build outputs
+/bin/
+/obj/
+/zip/
+/zips/
+
+# Build-time generated static deps
+/obj/proto/
+/tools/protoc
+/lib/libprotobuf-lite.a
+/lib/liblibmem.a
+/lib/libyaml-cpp.a
+
+# Third-party sources are fetched at build time, not committed.
+/third_party/
 
 # Developer notes live in their own repo (docs/developer/); docs/superpowers/ is
 # the superpowers working dir. Neither is part of this repo — only docs/LICENSE/ is.
 docs/developer/
 docs/superpowers/
-.DS_Store
 
-# protobuf is fetched + built + generated at build time (see Makefile), not committed.
-/third_party/protobuf/
-/obj/proto/
-/tools/protoc
-/lib/libprotobuf-lite.a
+# Local Deck/debug helpers and one-off probes.
+/lua-test/
+/tools/cloudbadge_probe*.py
+
+# Removed optional achievement schema helper; achievements are handled internally.
+/tools/SLScheevo/

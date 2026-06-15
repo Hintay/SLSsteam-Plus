@@ -9,21 +9,21 @@
   }: let
     forAllSystems = fn:
       nixpkgs.lib.genAttrs nixpkgs.lib.platforms.linux (
-        system: let
-          pkgs = import nixpkgs {
+        system:
+          fn (import nixpkgs {
             inherit system;
             config.allowUnfreePredicate = pkg:
               builtins.elem (nixpkgs.lib.getName pkg) ["steam" "steam-unwrapped"];
-          };
-        in
-          fn pkgs
+          })
       );
+
+    rev = self.rev or self.dirtyRev or "unknown";
   in {
     formatter = forAllSystems (pkgs: pkgs.alejandra);
 
     packages = forAllSystems (pkgs: rec {
-      sls-steam = pkgs.callPackage ./nix-modules/default.nix {rev = self.rev or self.dirtyRev or "unknown";};
-      wrapped = pkgs.callPackage ./nix-modules/wrapped.nix {rev = self.rev or self.dirtyRev or "unknown";};
+      sls-steam = pkgs.callPackage ./nix-modules/default.nix {inherit rev;};
+      wrapped = pkgs.callPackage ./nix-modules/wrapped.nix {inherit rev;};
       default = sls-steam;
     });
 

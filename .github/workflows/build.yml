@@ -38,20 +38,28 @@ jobs:
           set -eux
           dpkg --add-architecture i386
           apt-get update
+          # python3: build-time only, needed by keystone's bundled LLVM (llvm-build)
+          # when libmem is compiled from source. The ubuntu:22.04 container has no
+          # python3, so a cache-miss dep rebuild fails without this.
+          # unzip: extract the official prebuilt protoc release zip (see Makefile).
           apt-get install -y --no-install-recommends \
-            g++ g++-multilib make cmake pkg-config git curl ca-certificates \
+            g++ g++-multilib make cmake pkg-config git curl ca-certificates python3 unzip \
             libssl-dev:i386 libcurl4-openssl-dev:i386
 
       - uses: actions/checkout@v4
 
-      - name: Cache protobuf toolchain
+      - name: Cache build-time third-party deps
         uses: actions/cache@v4
         with:
           path: |
             tools/protoc
             lib/libprotobuf-lite.a
+            lib/liblibmem.a
+            lib/libyaml-cpp.a
             third_party/protobuf
-          key: protobuf-${{ runner.os }}-3.15.8-${{ hashFiles('src/sdk/protobufs/slssteam_messages.proto', 'Makefile') }}
+            third_party/libmem
+            third_party/yaml-cpp
+          key: deps-${{ runner.os }}-${{ hashFiles('src/sdk/protobufs/slssteam_messages.proto', 'Makefile', 'deps.mk') }}
 
       - name: Build
         env:
@@ -59,7 +67,11 @@ jobs:
           PKG_CONFIG_LIBDIR: /usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
         run: |
           set -eux
-          make bin/SLSsteam.so bin/library-inject.so
+          # Build deps first (serial — each cmake sub-build already uses all cores),
+          # then compile the project objects in parallel. Avoids over-subscribing
+          # cores during the heavy dep builds while still parallelizing the .cpp.
+          make deps
+          make -j"$(nproc)" bin/SLSsteam.so bin/library-inject.so
 
       - name: Stage artifacts
         run: |
@@ -119,6 +131,15 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "9.0.x"
+      # Cache restored NuGet packages so `dotnet publish` doesn't re-download
+      # SteamKit2 (+ its transitive deps) every run. NuGet packages are version- and
+      # content-hashed, so the restore-keys prefix fallback is safe (no stale risk).
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('tools/ticket-grabber/ticket-grabber.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
       - name: Publish
         run: dotnet publish tools/ticket-grabber/ticket-grabber.csproj -r linux-x64 -c Release
       - uses: actions/upload-artifact@v4
@@ -191,8 +212,7 @@ jobs:
       - name: Assemble release bundle
         run: |
           set -eux
-          # Mirror the official release layout (minus SLScheevo — this fork
-          # implements achievements internally). setup.sh only needs ./bin/*;
+          # Mirror the official release layout. setup.sh only needs ./bin/*;
           # the rest are reference files / the ticket-grabber tool for the user.
           mkdir -p bundle/bin bundle/res bundle/docs \
                    bundle/tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish

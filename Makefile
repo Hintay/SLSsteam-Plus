@@ -5,9 +5,14 @@
 CXX := g++
 CC := gcc
 
-# libprotobuf-lite.a is built at build time (not present at parse time on a clean
-# checkout), so list it explicitly; wildcard covers only the committed prebuilt libs.
-libs := $(filter-out lib/libprotobuf-lite.a,$(wildcard lib/*.a)) $(PROTOBUF_LITE_A)
+include deps.mk
+
+DEFAULT_LUA_A := obj/liblua5.4.a
+DEFAULT_PROTOC := tools/protoc
+DEFAULT_PROTOBUF_LITE_A := lib/libprotobuf-lite.a
+DEFAULT_LIBMEM_A := lib/liblibmem.a
+DEFAULT_YAML_CPP_A := lib/libyaml-cpp.a
+
 srcs := $(shell find src/ -type f -iname "*.cpp")
 objs := $(srcs:src/%.cpp=obj/%.o)
 deps := $(objs:%.o=%.d)
@@ -16,23 +21,42 @@ deps := $(objs:%.o=%.d)
 # built into a static archive linked into the .so. This removes any external
 # 32-bit lua runtime dependency on every target (gcc .7z / Arch makepkg / Nix),
 # matching upstream which only depends on openssl + curl.
-# NOTE: the Nix sandbox has no network, so nix-modules/default.nix pre-stages
-# these same sources via fetchurl and touches $(LUA_STAMP) so make skips the
-# download. Keep LUA_VER / LUA_SHA256 in sync with that file.
-LUA_VER    := 5.4.8
-LUA_SHA256 := 4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
-LUA_DIR    := third_party/lua
-LUA_STAMP  := $(LUA_DIR)/.fetched-$(LUA_VER)
+# NOTE: deps.mk is the single source of truth for versions and hashes. The paths
+# below are overridable so Nix/other external builds can inject their own headers
+# and archives without using the Makefile's fetch/build rules.
+LUA_DIR     ?= third_party/lua
+LUA_STAMP   ?= $(LUA_DIR)/.fetched-$(LUA_VER)
+LUA_INCLUDE ?= $(LUA_DIR)
+LUA_A       ?= $(DEFAULT_LUA_A)
 
 # protobuf is fetched + built at build time (host protoc + 32-bit libprotobuf-lite),
-# mirroring the Lua handling above. NOT committed. Keep PROTOBUF_VER / PROTOBUF_SHA256
-# in sync with nix-modules/default.nix (its sandbox has no network -> fetchurl pre-stage).
-PROTOBUF_VER    := 3.15.8
-PROTOBUF_SHA256 := 9b57647b898e45253c98fae35146f6a5e9e788817d29019f9280270c951a0038
-PROTOBUF_DIR    := third_party/protobuf
-PROTOBUF_STAMP  := $(PROTOBUF_DIR)/.fetched-$(PROTOBUF_VER)
-PROTOC          := tools/protoc
-PROTOBUF_LITE_A := lib/libprotobuf-lite.a
+# mirroring the Lua handling above. NOT committed. External builds may override
+# PROTOC / PROTOBUF_LITE_A / PROTOBUF_INCLUDE and clear FETCHED_DEP_STAMPS.
+PROTOBUF_DIR     ?= third_party/protobuf
+PROTOBUF_STAMP   ?= $(PROTOBUF_DIR)/.fetched-$(PROTOBUF_VER)
+PROTOC           ?= $(DEFAULT_PROTOC)
+PROTOBUF_LITE_A  ?= $(DEFAULT_PROTOBUF_LITE_A)
+PROTOBUF_INCLUDE ?= $(PROTOBUF_DIR)/src
+
+# libmem is fetched + built at build time to avoid committed headers/prebuilt .a
+# blobs. The upstream static build bundles capstone/keystone/llvm into liblibmem.a,
+# matching the old committed archive name.
+LIBMEM_DIR     ?= third_party/libmem
+LIBMEM_STAMP   ?= $(LIBMEM_DIR)/.fetched-$(LIBMEM_VER)
+LIBMEM_A       ?= $(DEFAULT_LIBMEM_A)
+LIBMEM_INCLUDE ?= $(LIBMEM_DIR)/include
+
+# yaml-cpp is fetched + built at build time for reproducible 32-bit static
+# linking. External builds may override YAML_CPP_A / YAML_CPP_INCLUDE.
+YAML_CPP_DIR     ?= third_party/yaml-cpp
+YAML_CPP_STAMP   ?= $(YAML_CPP_DIR)/.fetched-$(YAML_CPP_VER)
+YAML_CPP_A       ?= $(DEFAULT_YAML_CPP_A)
+YAML_CPP_INCLUDE ?= $(YAML_CPP_DIR)/include
+
+# All static libraries used by the final link. No prebuilt .a files are committed
+# for the default build; external/Nix builds may override these paths.
+STATIC_LIBS ?= $(LIBMEM_A) $(YAML_CPP_A) $(PROTOBUF_LITE_A)
+FETCHED_DEP_STAMPS ?= $(LUA_STAMP) $(PROTOBUF_STAMP) $(LIBMEM_STAMP) $(YAML_CPP_STAMP)
 
 # The lua 5.4 library sources (everything except the lua.c/luac.c standalone
 # mains). Hard-coded rather than $(wildcard) because the tree does not exist at
@@ -41,20 +65,21 @@ lua_names  := lapi lauxlib lbaselib lcode lcorolib lctype ldblib ldebug ldo \
               ldump lfunc lgc linit liolib llex lmathlib lmem loadlib lobject \
               lopcodes loslib lparser lstate lstring lstrlib ltable ltablib ltm \
               lundump lutf8lib lvm lzio
-lua_a      := obj/liblua5.4.a
 lua_objs   := $(lua_names:%=obj/luavendor/%.o)
 
 CXXFLAGS := -O3 -flto=auto -fPIC -m32 -std=c++20 -Wall -Wextra -Wpedantic -Wno-error=format-security -D_GLIBCXX_USE_CXX11_ABI=0
-CXXFLAGS += -Ithird_party/lua
-# protobuf headers come from the fetched source tree (the vendored include/google/
-# tree is removed). Keep -isystem include for base64/libmem/yaml-cpp headers.
-CXXFLAGS += -isystem $(PROTOBUF_DIR)/src
+CXXFLAGS += -I$(LUA_INCLUDE)
+# Fetched third-party headers. Keep -isystem include for the small committed
+# base64 header only.
+CXXFLAGS += -isystem $(PROTOBUF_INCLUDE)
+CXXFLAGS += -isystem $(LIBMEM_INCLUDE)
+CXXFLAGS += -isystem $(YAML_CPP_INCLUDE)
 CXXFLAGS += -Iobj/proto
 
 LDFLAGS := -shared -Wl,--no-undefined
 LDFLAGS += $(shell pkg-config --libs "openssl")
 LDFLAGS += $(shell pkg-config --libs "libcurl")
-# Vendored lua is linked via $(lua_a); -ldl satisfies loadlib's dlopen (a no-op
+# Bundled lua is linked via $(LUA_A); -ldl satisfies loadlib's dlopen (a no-op
 # stub on modern glibc, so it adds no external package dependency).
 LDFLAGS += -ldl
 
@@ -121,23 +146,59 @@ $(PROTOBUF_STAMP):
 	rm -f "$(PROTOBUF_DIR)/protobuf.tar.gz"
 	touch "$@"
 
-# Build the host protoc from the fetched source via the tarball's bundled CMake
-# (as OST does). protoc is a HOST build tool — no -m32. Cached: rebuilt only if the
-# stamp changes. tests OFF; static; no shared libs.
-$(PROTOC): $(PROTOBUF_STAMP)
-	@mkdir -p tools $(PROTOBUF_DIR)/build-host
-	cmake -S "$(PROTOBUF_DIR)/cmake" -B "$(PROTOBUF_DIR)/build-host" \
-		-DCMAKE_BUILD_TYPE=Release \
-		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-		-Dprotobuf_BUILD_TESTS=OFF \
-		-Dprotobuf_BUILD_SHARED_LIBS=OFF
-	cmake --build "$(PROTOBUF_DIR)/build-host" --target protoc -j
-	cp "$(PROTOBUF_DIR)/build-host/protoc" "$(PROTOC)"
+# Fetch + verify + unpack libmem plus its fixed capstone/keystone submodules.
+# The GitHub tarball keeps the submodule directories empty, while libmem's CMake
+# requires them to build the bundled static archive.
+$(LIBMEM_STAMP):
+	@mkdir -p $(LIBMEM_DIR)
+	curl -fsSL "https://codeload.github.com/rdbo/libmem/tar.gz/refs/tags/$(LIBMEM_VER)" -o "$(LIBMEM_DIR)/libmem.tar.gz"
+	printf '%s  %s\n' "$(LIBMEM_SHA256)" "$(LIBMEM_DIR)/libmem.tar.gz" | sha256sum -c -
+	tar xzf "$(LIBMEM_DIR)/libmem.tar.gz" -C "$(LIBMEM_DIR)" --strip-components=1 "libmem-$(LIBMEM_VER)"
+	curl -fsSL "https://codeload.github.com/rdbo/capstone/tar.gz/$(LIBMEM_CAPSTONE_REV)" -o "$(LIBMEM_DIR)/capstone.tar.gz"
+	printf '%s  %s\n' "$(LIBMEM_CAPSTONE_SHA256)" "$(LIBMEM_DIR)/capstone.tar.gz" | sha256sum -c -
+	@mkdir -p "$(LIBMEM_DIR)/external/capstone"
+	tar xzf "$(LIBMEM_DIR)/capstone.tar.gz" -C "$(LIBMEM_DIR)/external/capstone" --strip-components=1
+	curl -fsSL "https://codeload.github.com/rdbo/keystone/tar.gz/$(LIBMEM_KEYSTONE_REV)" -o "$(LIBMEM_DIR)/keystone.tar.gz"
+	printf '%s  %s\n' "$(LIBMEM_KEYSTONE_SHA256)" "$(LIBMEM_DIR)/keystone.tar.gz" | sha256sum -c -
+	@mkdir -p "$(LIBMEM_DIR)/external/keystone"
+	tar xzf "$(LIBMEM_DIR)/keystone.tar.gz" -C "$(LIBMEM_DIR)/external/keystone" --strip-components=1
+	# Build only the X86 LLVM target in keystone — SLSsteam only assembles x86, but
+	# keystone defaults to 7 targets (AArch64;ARM;Mips;PowerPC;Sparc;SystemZ;X86),
+	# which is the single biggest chunk of build time. LLVM_TARGETS_TO_BUILD is a
+	# non-FORCE CACHE var, so injecting it into the keystone sub-build overrides "all".
+	sed -i '/ExternalProject_Add(keystone-engine/ s/})$$/} -DLLVM_TARGETS_TO_BUILD=X86)/' "$(LIBMEM_DIR)/external/CMakeLists.txt"
+	rm -f "$(LIBMEM_DIR)/libmem.tar.gz" "$(LIBMEM_DIR)/capstone.tar.gz" "$(LIBMEM_DIR)/keystone.tar.gz"
+	touch "$@"
+
+# Fetch + verify + unpack yaml-cpp sources. Network is needed only here; Nix
+# pre-stages this tree + stamp for sandboxed builds.
+$(YAML_CPP_STAMP):
+	@mkdir -p $(YAML_CPP_DIR)
+	curl -fsSL "https://github.com/jbeder/yaml-cpp/archive/refs/tags/$(YAML_CPP_VER).tar.gz" -o "$(YAML_CPP_DIR)/yaml-cpp.tar.gz"
+	printf '%s  %s\n' "$(YAML_CPP_SHA256)" "$(YAML_CPP_DIR)/yaml-cpp.tar.gz" | sha256sum -c -
+	tar xzf "$(YAML_CPP_DIR)/yaml-cpp.tar.gz" -C "$(YAML_CPP_DIR)" --strip-components=1 "yaml-cpp-$(YAML_CPP_VER)"
+	rm -f "$(YAML_CPP_DIR)/yaml-cpp.tar.gz"
+	touch "$@"
+
+# Host protoc: download the official prebuilt linux-x86_64 binary for the pinned
+# version instead of compiling protoc from source. Building the full protoc
+# (libprotobuf + libprotoc + every language backend) is the slowest dep step, and
+# protoc is only a build tool — the shipped runtime ($(PROTOBUF_LITE_A)) and the
+# generated code still come from source, so reproducibility of the .so is intact.
+# Hash-pinned (PROTOC_BIN_SHA256). HOST x86_64 — the .7z path builds on x86_64; the
+# Nix path injects PROTOC from nixpkgs and never runs this rule.
+$(DEFAULT_PROTOC):
+	@mkdir -p tools "$(PROTOBUF_DIR)"
+	curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOBUF_VER)/protoc-$(PROTOBUF_VER)-linux-x86_64.zip" -o "$(PROTOBUF_DIR)/protoc-bin.zip"
+	printf '%s  %s\n' "$(PROTOC_BIN_SHA256)" "$(PROTOBUF_DIR)/protoc-bin.zip" | sha256sum -c -
+	unzip -o -j "$(PROTOBUF_DIR)/protoc-bin.zip" "bin/protoc" -d tools
+	rm -f "$(PROTOBUF_DIR)/protoc-bin.zip"
+	chmod +x "$(DEFAULT_PROTOC)"
 
 # Build the 32-bit libprotobuf-lite.a from the same fetched source. MUST match the
 # project ABI: -m32 -fPIC and -D_GLIBCXX_USE_CXX11_ABI=0 (std::string ABI must agree
 # with the rest of the .so). PROTOC_BINARIES OFF — only the lite runtime is built.
-$(PROTOBUF_LITE_A): $(PROTOBUF_STAMP)
+$(DEFAULT_PROTOBUF_LITE_A): $(PROTOBUF_STAMP)
 	@mkdir -p lib $(PROTOBUF_DIR)/build-lite32
 	cmake -S "$(PROTOBUF_DIR)/cmake" -B "$(PROTOBUF_DIR)/build-lite32" \
 		-DCMAKE_BUILD_TYPE=Release \
@@ -148,7 +209,38 @@ $(PROTOBUF_LITE_A): $(PROTOBUF_STAMP)
 		-DCMAKE_CXX_FLAGS="-m32 -fPIC -D_GLIBCXX_USE_CXX11_ABI=0" \
 		-DCMAKE_C_FLAGS="-m32 -fPIC"
 	cmake --build "$(PROTOBUF_DIR)/build-lite32" --target libprotobuf-lite -j
-	cp "$(PROTOBUF_DIR)/build-lite32/libprotobuf-lite.a" "$(PROTOBUF_LITE_A)"
+	cp "$(PROTOBUF_DIR)/build-lite32/libprotobuf-lite.a" "$(DEFAULT_PROTOBUF_LITE_A)"
+
+# Build 32-bit libmem and bundle its static dependencies into lib/liblibmem.a.
+# LIBMEM_ARCH must be forced because CMake's host processor is x86_64 even when
+# compiling with -m32.
+$(DEFAULT_LIBMEM_A): $(LIBMEM_STAMP)
+	@mkdir -p lib $(LIBMEM_DIR)/build-static32
+	cmake -S "$(LIBMEM_DIR)" -B "$(LIBMEM_DIR)/build-static32" \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DLIBMEM_BUILD_TESTS=OFF \
+		-DLIBMEM_DEEP_TESTS=OFF \
+		-DLIBMEM_BUILD_STATIC=ON \
+		-DLIBMEM_ARCH=i386 \
+		-DCMAKE_CXX_FLAGS="-m32 -fPIC -D_GLIBCXX_USE_CXX11_ABI=0" \
+		-DCMAKE_C_FLAGS="-m32 -fPIC"
+	cmake --build "$(LIBMEM_DIR)/build-static32" --target libmem -j
+	cp "$(LIBMEM_DIR)/build-static32/liblibmem.a" "$(DEFAULT_LIBMEM_A)"
+
+# Build 32-bit yaml-cpp as a static PIC archive. Tests/tools are disabled to keep
+# the build focused on the library needed by SLSsteam.
+$(DEFAULT_YAML_CPP_A): $(YAML_CPP_STAMP)
+	@mkdir -p lib $(YAML_CPP_DIR)/build-static32
+	cmake -S "$(YAML_CPP_DIR)" -B "$(YAML_CPP_DIR)/build-static32" \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DYAML_CPP_BUILD_TESTS=OFF \
+		-DYAML_CPP_BUILD_TOOLS=OFF \
+		-DYAML_CPP_INSTALL=OFF \
+		-DYAML_BUILD_SHARED_LIBS=OFF \
+		-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+		-DCMAKE_CXX_FLAGS="-m32 -fPIC -D_GLIBCXX_USE_CXX11_ABI=0"
+	cmake --build "$(YAML_CPP_DIR)/build-static32" --target yaml-cpp -j
+	cp "$(YAML_CPP_DIR)/build-static32/libyaml-cpp.a" "$(DEFAULT_YAML_CPP_A)"
 
 # Generate the single curated schema at build time. No .pb.cc -> .pb.cpp rename:
 # the generated .cc is compiled directly by an explicit rule below.
@@ -176,19 +268,19 @@ obj/luavendor/%.o: $(LUA_DIR)/%.c | $(LUA_STAMP)
 	@mkdir -p $(dir $@)
 	$(CC) -m32 -fPIC -O2 -DLUA_USE_LINUX -I$(LUA_DIR) -c $< -o $@
 
-$(lua_a): $(lua_objs)
+$(DEFAULT_LUA_A): $(lua_objs)
 	@mkdir -p $(dir $@)
 	ar rcs $@ $^
 
-# Project sources compile with -I$(LUA_DIR) and some #include <lua.h>, so every
+# Project sources compile with -I$(LUA_INCLUDE) and some #include <lua.h>, so every
 # object must wait for the lua fetch/extract. Order-only (|): the stamp's mtime
 # must not force a full rebuild of the tree.
 # proto_gen (slssteam_messages.pb.h) must also be present before any source
 # that transitively includes it via CProtoBufMsgBase.hpp.
-$(objs): | $(LUA_STAMP) $(PROTOBUF_STAMP) $(proto_gen)
-$(proto_obj): | $(PROTOBUF_STAMP)
+$(objs): | $(FETCHED_DEP_STAMPS) $(proto_gen)
+$(proto_obj): | $(FETCHED_DEP_STAMPS)
 
-bin/SLSsteam.so: $(objs) $(proto_obj) $(lua_a) $(PROTOBUF_LITE_A) $(libs)
+bin/SLSsteam.so: $(objs) $(proto_obj) $(LUA_A) $(STATIC_LIBS)
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $^ -o bin/SLSsteam.so $(LDFLAGS)
 
@@ -232,7 +324,6 @@ zips: rebuild
 		"setup.sh" \
 		"docs/LICENSE" \
 		"res/config.yaml" \
-		"tools/SLScheevo" \
 		"tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber"
 
 	#Compatibility for Github issues
@@ -243,7 +334,6 @@ zips: rebuild
 		"setup.sh" \
 		"docs/LICENSE" \
 		"res/config.yaml" \
-		"tools/SLScheevo" \
 		"tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber"
 
 zips-config:
@@ -251,9 +341,16 @@ zips-config:
 	#Compatibility for Github issues
 	7z a -mx9 -m9=lzma2 "zips/SLSsteam - SLSConfig $(DATE).7z" "$(HOME)/.config/SLSsteam/config.yaml"
 
+# Build every dependency (fetched/compiled) but NOT the project itself. Lets a
+# build run `make deps` first (deps build serially — each cmake sub-build already
+# uses all cores, so no core over-subscription / OOM) and then `make -j ... bin/...`
+# to compile the project's own objects in parallel. The Nix build injects prebuilt
+# deps and skips this entirely.
+deps: $(PROTOC) $(LUA_A) $(STATIC_LIBS) $(proto_gen)
+
 build: audit-libs
 rebuild: clean build
 all: clean build zips
 
-.PHONY: all build clean rebuild zips lua_smoke pkg_smoke netpacket_smoke
+.PHONY: all build clean rebuild zips lua_smoke pkg_smoke netpacket_smoke deps
 .NOTPARALLEL: clean rebuild zips
