@@ -5,127 +5,71 @@
 
 #include "libmem/libmem.h"
 
+#include <cstdlib>
 #include <map>
+#include <set>
 #include <vector>
 
-std::vector<int16_t> MemHlp::patternToBytes(const char* pattern)
-{
-	auto bytes = std::vector<int16_t>();
+// patternToBytes and matchInBuffer live in src/memhlp_pure.cpp so they can be
+// linked into smoke tests without pulling in libmem / g_pLog / Utils.
 
-	char* start = const_cast<char*>(pattern);
-	char* end = start + strlen(pattern);
-
-	while (start < end)
-	{
-		if (*start == '?')
-		{
-			bytes.emplace_back(-1);
-		}
-		else if (*start != ' ')
-		{
-			bytes.emplace_back(std::strtoul(start, &start, 16));
-		}
-
-		start++;
-	}
-
-	return bytes;
-}
-
-lm_address_t MemHlp::patternScan(const char* pattern, lm_module_t targetModule)
+std::vector<lm_address_t> MemHlp::patternScanAll(const char* pattern, lm_module_t targetModule)
 {
 	const auto bytes = patternToBytes(pattern);
 
-	auto codeSegments = std::map<lm_address_t, lm_address_t>();
-	const static auto enumSegments = [](lm_segment_t* seg, lm_void_t* arg) -> lm_bool_t
+	static std::map<lm_address_t, lm_address_t> cachedSegments;
+	static bool segsCached = false;
+	if (!segsCached)
 	{
-		auto rSegments = reinterpret_cast<std::map<lm_address_t, lm_address_t>*>(arg);
-		if(seg->prot & LM_PROT_XR)
+		const auto enumSegments = [](lm_segment_t* seg, lm_void_t* arg) -> lm_bool_t
 		{
-			(*rSegments)[seg->base] = seg->base + seg->size;
-			//g_pLog->debug("Code section at %p to %p\n", seg->base, seg->base + seg->size);
-		}
-
-		return LM_TRUE;
-	};
-
-	LM_EnumSegments(enumSegments, &codeSegments);
-
-	lm_address_t address = LM_ADDRESS_BAD;
-	unsigned int matches = 0;
-
-	for(const auto& itm : codeSegments)
-	{
-		if (targetModule.base > itm.second)
-		{
-			continue;
-		}
-		if (targetModule.base + targetModule.size < itm.first)
-		{
-			continue;
-		}
-
-		for (lm_address_t cur = itm.first; cur < itm.second; cur++)
-		{
-			bool found = true;
-
-			for(unsigned int i = 0; i < bytes.size(); i++)
-			{
-				if (bytes.at(i) == -1)
-				{
-					continue;
-				}
-
-				lm_address_t byteAddr = cur + i;
-				if (byteAddr > itm.second)
-				{
-					found = false;
-					break;
-				}
-
-				const lm_byte_t* pbyte = reinterpret_cast<lm_byte_t*>(byteAddr);
-				if (*pbyte != bytes.at(i))
-				{
-					found = false;
-					break;
-				}
-			}
-
-			if (found)
-			{
-				address = cur;
-				matches++;
-
-				if (matches > 1)
-				{
-					g_pLog->debug("Pattern %s found %i times at %p!\n", pattern, matches, cur);
-				}
-			}
-		}
+			auto rSegments = reinterpret_cast<std::map<lm_address_t, lm_address_t>*>(arg);
+			if (seg->prot & LM_PROT_XR)
+				(*rSegments)[seg->base] = seg->base + seg->size;
+			return LM_TRUE;
+		};
+		LM_EnumSegments(enumSegments, &cachedSegments);
+		segsCached = true;
 	}
 
-	return address;
+	std::vector<lm_address_t> matches;
+	for (const auto& itm : cachedSegments)
+	{
+		if (targetModule.base > itm.second)
+			continue;
+		if (targetModule.base + targetModule.size < itm.first)
+			continue;
+		const auto* buf = reinterpret_cast<const uint8_t*>(itm.first);
+		const size_t len = itm.second - itm.first;
+		for (size_t off : matchInBuffer(bytes, buf, len))
+			matches.push_back(itm.first + off);
+	}
+	return matches;
 }
 
 lm_address_t MemHlp::searchSignature(const char* name, const char* signature, lm_module_t module, SigFollowMode mode, void* extraData, size_t extraDataSize)
 {
-	//lm_address_t address = LM_SigScan(signature, module.base, module.size);
-	lm_address_t address = patternScan(signature, module);
-	if (address == LM_ADDRESS_BAD)
+	const auto matches = patternScanAll(signature, module);
+	if (matches.empty())
 	{
 		g_pLog->debug("Unable to find signature for %s!\n", name);
+		return LM_ADDRESS_BAD;
 	}
-	else
+
+	// Resolve each raw match through the follow mode, then require the resolved
+	// targets to agree. Many call-sites that all resolve to the same function
+	// (common with Relative) are NOT ambiguous; matches resolving to different
+	// addresses are, and are rejected.
+	std::set<lm_address_t> resolved;
+	for (lm_address_t address : matches)
 	{
 		switch (mode)
 		{
 			case SigFollowMode::Relative:
-				g_pLog->debug("Resolving relative of %s at %p\n", name, address);
 				address = MemHlp::getJmpTarget(address);
 				break;
 
 			case SigFollowMode::PrologueUpwards:
-				g_pLog->debug("Searching function prologue of %s from %p\n", name, address);
 				address = MemHlp::findPrologue(address, static_cast<lm_byte_t*>(extraData), extraDataSize);
 				break;
 
@@ -133,10 +77,21 @@ lm_address_t MemHlp::searchSignature(const char* name, const char* signature, lm
 				break;
 		}
 
-		g_pLog->debug("%s at %p\n", name, address);
+		if (address != LM_ADDRESS_BAD)
+			resolved.insert(address);
 	}
 
-	return address;
+	if (resolved.size() == 1)
+	{
+		const lm_address_t address = *resolved.begin();
+		g_pLog->debug("%s at %p\n", name, address);
+		return address;
+	}
+
+	g_pLog->debug("%s: %zu raw matches resolved to %zu distinct targets, rejecting (%s)\n",
+		name, matches.size(), resolved.size(),
+		resolved.empty() ? "all resolutions failed" : "ambiguous");
+	return LM_ADDRESS_BAD;
 }
 
 lm_address_t MemHlp::searchSignature(const char* name, const char* signature, lm_module_t module, SigFollowMode mode)
@@ -163,7 +118,17 @@ lm_address_t MemHlp::getJmpTarget(lm_address_t address)
 	if (strcmp(inst.mnemonic, "jmp") != 0 && strcmp(inst.mnemonic, "call") != 0)
 		return LM_ADDRESS_BAD;
 
-	return std::stoul(inst.op_str, nullptr, 16);
+	// Indirect jmp/call (e.g. "call eax", "jmp dword [reg]") have a non-numeric
+	// op_str. std::stoul would throw std::invalid_argument, and that exception
+	// would escape Patterns::init into the LD_AUDIT la_objopen C callback ->
+	// std::terminate. strtoul never throws: it leaves endp == op_str on no
+	// conversion, which we treat as "not a direct target".
+	char* endp = nullptr;
+	const unsigned long target = std::strtoul(inst.op_str, &endp, 16);
+	if (endp == inst.op_str || *endp != '\0' || target == 0)
+		return LM_ADDRESS_BAD;
+
+	return static_cast<lm_address_t>(target);
 }
 
 lm_address_t MemHlp::findPrologue(lm_address_t address, lm_byte_t* prologueBytes, lm_size_t prologueSize)

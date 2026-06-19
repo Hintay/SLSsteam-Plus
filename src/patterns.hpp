@@ -1,170 +1,40 @@
 #pragma once
 
 #include "memhlp.hpp"
-
 #include "libmem/libmem.h"
 
 #include <string>
 #include <vector>
 
-
 struct Pattern_t
 {
 public:
 	const std::string name;
-	const std::string pattern;
+	const std::vector<std::string> candidates;   // tried in order; first that resolves wins
 	const MemHlp::SigFollowMode followMode;
 	std::vector<uint8_t> prologue;
 	const bool optional;
 
-	lm_address_t address;
 	lm_module_t* module;
+	lm_address_t address;
 
-	Pattern_t(const char* name, const char* pattern, MemHlp::SigFollowMode followMode, lm_module_t* module = nullptr, bool optional = false);
-	Pattern_t(const char* name, const char* pattern, MemHlp::SigFollowMode followMode, std::vector<uint8_t> prologue, lm_module_t* module = nullptr, bool optional = false);
-	//~CPattern();
+	Pattern_t(const char* name, std::vector<std::string> candidates,
+	          MemHlp::SigFollowMode followMode, std::vector<uint8_t> prologue = {},
+	          lm_module_t* module = nullptr, bool optional = false);
 
 	bool find();
+
+	// Retry resolution using online-provided candidates/follow/prologue (phase 2).
+	bool findWith(const std::vector<std::string>& cands,
+	              MemHlp::SigFollowMode mode, std::vector<uint8_t> prologueBytes);
 };
 
 namespace Patterns
 {
-	extern Pattern_t FamilyGroupRunningApp;
-	extern Pattern_t StopPlayingBorrowedApp;
-
-	extern Pattern_t LoadDepotDecryptionKey;
-	extern Pattern_t BuildDepotDependency;
-	extern Pattern_t BUpdateAppDownloadPlan;
-
-	extern Pattern_t TraceIPC;
-
-	namespace CAPIJob
-	{
-		extern Pattern_t GetPlayerStats;
-	}
-
-	namespace CProtoBufMsgBase
-	{
-		extern Pattern_t InitFromPacket;
-		extern Pattern_t Send;
-	};
-
-	namespace CSteamEngine
-	{
-		extern Pattern_t Init;
-		extern Pattern_t SetAppIdForCurrentPipe;
-
-		extern Pattern_t Offset_User;
-	}
-
-	namespace CSteamMatchmakingServers
-	{
-		extern Pattern_t GetServerDetails;
-		extern Pattern_t RequestInternetServerList;
-	}
-
-	namespace CUser
-	{
-		//TODO: Order & Convert old patterns
-		extern Pattern_t CheckAppOwnership;
-		extern Pattern_t GetSubscribedApps;
-		extern Pattern_t PostCallback;
-		extern Pattern_t UpdateAppOwnershipTicket;
-		extern Pattern_t MarkLicenseAsChanged;
-		extern Pattern_t ProcessPendingLicenseUpdates;
-	}
-
-	namespace IClientAppManager
-	{
-		extern Pattern_t RunIPCFrame;
-		extern Pattern_t BCanRemotePlayTogether;
-	}
-
-	namespace IClientApps
-	{
-		extern Pattern_t RunIPCFrame;
-	}
-
-	namespace IClientRemoteStorage
-	{
-		extern Pattern_t RunIPCFrame;
-	}
-
-	namespace IClientUser
-	{
-		extern Pattern_t RunIPCFrame;
-
-		extern Pattern_t BLoggedOn;
-		extern Pattern_t BUpdateAppOwnershipTicket;
-		extern Pattern_t GetAppOwnershipTicketExtendedData;
-		extern Pattern_t GetSteamId;
-		extern Pattern_t IsUserSubscribedAppInTicket;
-		extern Pattern_t RequiresLegacyCDKey;
-	}
-
-	namespace IClientUGC
-	{
-		extern Pattern_t RunIPCFrame;
-	}
-
-	namespace IClientUserStats
-	{
-		extern Pattern_t RunIPCFrame;
-	}
-
-	namespace IClientUtils
-	{
-		extern Pattern_t RunIPCFrame;
-		extern Pattern_t Offset_GetPipeIndex;
-	}
-
-	namespace CPackageInfo
-	{
-		extern Pattern_t GetPackageInfo;
-	}
-
-	namespace CConfigStore
-	{
-		extern Pattern_t SharedConfigWriteCallsite;
-		extern Pattern_t WriteVdfFile;
-	}
-
-	namespace IClientRemoteStorage
-	{
-		extern Pattern_t SetCloudEnabledForApp;   // idx25 target entry — identity check for the raw vcall
-	}
-
-	namespace CUtlMemory
-	{
-		extern Pattern_t Grow;   // CUtlMemory<uint32>::Grow(mem*, int) via Relative anchor
-	}
-
-	namespace CWebSocketConnection
-	{
-		extern Pattern_t BBuildAndAsyncSendFrame;   // outgoing raw packet (manifest request-code)
-	}
-
-	namespace CCMConnection
-	{
-		extern Pattern_t RecvPkt;                   // incoming raw packet (CNetPacket*)
-	}
-
-	//steamui.so
-	namespace ISteamMatchmakingPingResponse
-	{
-		extern Pattern_t ServerResponded;
-	}
-
-	namespace CSteamUIAppController
-	{
-		extern Pattern_t GetAppByID;
-		extern Pattern_t FillInAppOverview;
-	}
-	namespace CUpdateManager
-	{
-		extern Pattern_t MarkAppChange;
-	}
-
-	extern std::vector<Pattern_t*> patterns;
+	// Meyers singleton: registry constructed before any Pattern_t ctor runs,
+	// regardless of translation-unit init order.
+	std::vector<Pattern_t*>& registry();
 	bool init();
 }
+
+#include "patterns.gen.hpp"   // generated extern Pattern_t declarations

@@ -161,7 +161,7 @@ void Diagnostics::logPatternSummary()
 	size_t found = 0;
 	size_t missing = 0;
 
-	for (const auto* pattern : Patterns::patterns)
+	for (const auto* pattern : Patterns::registry())
 	{
 		if (!pattern)
 		{
