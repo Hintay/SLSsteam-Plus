@@ -4,7 +4,7 @@
 #include "log.hpp"
 #include "patterns.hpp"
 #include "utils.hpp"
-#include "version.hpp"
+#include "version.gen.hpp"
 
 #include "libmem/libmem.h"
 
@@ -146,7 +146,7 @@ void Diagnostics::logStartupModuleSummary()
 		return;
 	}
 
-	g_pLog->info("Diagnostics: SLSsteam version=%llu\n", static_cast<unsigned long long>(VERSION));
+	g_pLog->info("Diagnostics: SLSsteam version=%llu commit=%s\n", static_cast<unsigned long long>(VERSION), COMMIT_HASH);
 	logModuleSummary("steamclient", g_modSteamClient);
 	logModuleSummary("steamui", g_modSteamUI);
 }

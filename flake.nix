@@ -18,11 +18,12 @@
       );
 
     rev = self.rev or self.dirtyRev or "unknown";
+    slssteamVersion = self.lastModifiedDate or "19700101000000";
   in {
     formatter = forAllSystems (pkgs: pkgs.alejandra);
 
     packages = forAllSystems (pkgs: rec {
-      sls-steam = pkgs.callPackage ./nix-modules/default.nix {inherit rev;};
+      sls-steam = pkgs.callPackage ./nix-modules/default.nix {inherit rev slssteamVersion;};
       wrapped = pkgs.callPackage ./nix-modules/wrapped.nix {inherit rev;};
       default = sls-steam;
     });

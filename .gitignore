@@ -34,8 +34,7 @@ docs/superpowers/
 # Removed optional achievement schema helper; achievements are handled internally.
 /tools/SLScheevo/
 
-# Codegen output from res/patterns.yaml (see tools/gen_patterns.py)
-/src/patterns.gen.hpp
-/src/patterns.gen.cpp
-/src/ipchash.gen.hpp
+# Codegen output (*.gen.* plus generator stamps)
+*.gen
+*.gen.*
 /src/.patterns-gen.stamp

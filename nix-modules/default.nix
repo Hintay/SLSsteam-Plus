@@ -1,5 +1,6 @@
 {
   rev,
+  slssteamVersion,
   lib,
   stdenv,
   pkgs,
@@ -261,6 +262,8 @@ in
         LIBMEM_INCLUDE=${libmem}/include \
         YAML_CPP_A=${yamlCpp}/lib/libyaml-cpp.a \
         YAML_CPP_INCLUDE=${yamlCpp}/include \
+        SLSSTEAM_VERSION=${slssteamVersion} \
+        SLSSTEAM_COMMIT=${rev} \
         FETCHED_DEP_STAMPS=
       runHook postBuild
     '';

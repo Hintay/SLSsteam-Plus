@@ -48,6 +48,42 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      - name: Compute version metadata
+        id: version
+        env:
+          HEAD_TIMESTAMP: ${{ github.event.head_commit.timestamp || '' }}
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at || '' }}
+        run: |
+          set -eux
+          # Derive build metadata from GitHub's event payload instead of running
+          # git inside the container. Container checkouts can have ownership that
+          # Git intentionally refuses unless safe.directory is configured.
+          version_source="${HEAD_TIMESTAMP:-$PR_UPDATED_AT}"
+          if [ -n "$version_source" ]; then
+            version="$(date -u -d "$version_source" '+%Y%m%d%H%M%S')"
+          else
+            version="$(date -u '+%Y%m%d%H%M%S')"
+          fi
+          commit="${GITHUB_SHA:0:12}"
+          pkgver="$version"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            pkgver="${GITHUB_REF_NAME#v}"
+            pkgver="${pkgver//[^A-Za-z0-9._]/_}"
+          fi
+
+          {
+            echo "version=$version"
+            echo "commit=$commit"
+            echo "pkgver=$pkgver"
+          } >> "$GITHUB_OUTPUT"
+
+          mkdir -p dist
+          {
+            echo "SLSSTEAM_VERSION=$version"
+            echo "SLSSTEAM_COMMIT=$commit"
+            echo "SLSSTEAM_PKGVER=$pkgver"
+          } > dist/version-metadata.env
+
       - name: Cache build-time third-party deps
         uses: actions/cache@v5
         with:
@@ -65,6 +101,8 @@ jobs:
         env:
           # Resolve the i386 .pc files (openssl/libcurl), not the amd64 ones.
           PKG_CONFIG_LIBDIR: /usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
+          SLSSTEAM_VERSION: ${{ steps.version.outputs.version }}
+          SLSSTEAM_COMMIT: ${{ steps.version.outputs.commit }}
         run: |
           set -eux
           # Build deps first (serial — each cmake sub-build already uses all cores),
@@ -168,17 +206,18 @@ jobs:
         run: |
           set -eux
           d="$PWD/pkg/slssteam-bin"
+          . artifacts/version-metadata.env
           # Stage the prebuilt .so + res assets next to the PKGBUILD and pin the
-          # version from res/version.txt.
+          # package version to the same metadata used by the built binaries.
           cp artifacts/SLSsteam.so artifacts/library-inject.so artifacts/ticket-grabber "$d/"
           cp res/SLSsteam.desktop res/SLSsteam-native.desktop res/logo.png "$d/"
-          # pkgver: on a tag build use the sanitized tag (v0.0.1-test → 0.0.1_test)
-          # so the .pkg version matches the release; otherwise res/version.txt.
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            pv="${GITHUB_REF_NAME#v}"; pv="${pv//[^A-Za-z0-9._]/_}"
-          else
-            pv="$(cat res/version.txt)"
-          fi
+          pv="$SLSSTEAM_PKGVER"
+          case "$pv" in
+            *[!A-Za-z0-9._]*|'')
+              echo "Invalid package version from metadata: '$pv'" >&2
+              exit 1
+              ;;
+          esac
           sed -i "s/^pkgver=.*/pkgver=$pv/" "$d/PKGBUILD"
           # makepkg refuses to run as root; -d skips dep checks (no compile, deps
           # only matter when the package is installed).

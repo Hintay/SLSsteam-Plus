@@ -93,8 +93,9 @@ LDFLAGS += $(shell pkg-config --libs "libcurl")
 # stub on modern glibc, so it adds no external package dependency).
 LDFLAGS += -ldl
 
-#DATE := $(shell date "+%Y%m%d%H%M%S")
-DATE := $(shell cat res/version.txt)
+SLSSTEAM_VERSION ?= $(shell if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git log -1 --format=%cd --date=format:%Y%m%d%H%M%S; else date -u "+%Y%m%d%H%M%S"; fi)
+SLSSTEAM_COMMIT ?= $(shell if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git rev-parse --short=12 HEAD; else echo unknown; fi)
+DATE := $(SLSSTEAM_VERSION)
 
 ifeq ($(shell echo $$NATIVE),1)
 	CXXFLAGS += -march=native
@@ -295,7 +296,10 @@ $(DEFAULT_LUA_A): $(lua_objs)
 # must not force a full rebuild of the tree.
 # proto_gen (slssteam_messages.pb.h) must also be present before any source
 # that transitively includes it via CProtoBufMsgBase.hpp.
-$(objs): | $(FETCHED_DEP_STAMPS) $(proto_gen)
+src/version.gen.hpp: embed-version.sh FORCE
+	SLSSTEAM_VERSION="$(SLSSTEAM_VERSION)" SLSSTEAM_COMMIT="$(SLSSTEAM_COMMIT)" sh ./embed-version.sh
+
+$(objs): | $(FETCHED_DEP_STAMPS) $(proto_gen) src/version.gen.hpp
 $(proto_obj): | $(FETCHED_DEP_STAMPS)
 
 bin/SLSsteam.so: $(objs) $(proto_obj) $(LUA_A) $(STATIC_LIBS)
@@ -311,12 +315,6 @@ tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber:
 	sh tools/ticket-grabber/build.sh
 
 -include $(deps)
-obj/update.o: src/update.cpp res/version.txt
-	$(shell sh ./embed-version.sh)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -isysteminclude -MMD -MP -c $< -o $@
-
--include $(deps)
 obj/config.o: src/config.cpp res/config.yaml
 	$(shell sh ./embed-config.sh)
 	@mkdir -p $(dir $@)
@@ -329,7 +327,9 @@ obj/%.o : src/%.cpp
 
 clean:
 	rm -rvf "obj/" "bin/" "zips/" "tools/ticket-grabber/bin"
-	rm -f src/patterns.gen.hpp src/patterns.gen.cpp src/ipchash.gen.hpp src/.patterns-gen.stamp
+	rm -f src/version.gen.hpp src/patterns.gen.hpp src/patterns.gen.cpp src/ipchash.gen.hpp src/.patterns-gen.stamp
+
+FORCE:
 
 install:
 	sh setup.sh
