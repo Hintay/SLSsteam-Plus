@@ -43,7 +43,7 @@ jobs:
           # python3, so a cache-miss dep rebuild fails without this.
           # unzip: extract the official prebuilt protoc release zip (see Makefile).
           apt-get install -y --no-install-recommends \
-            g++ g++-multilib make cmake pkg-config git curl ca-certificates python3 python3-yaml unzip \
+            g++ g++-multilib make cmake pkg-config git curl ca-certificates python3 python3-tomli unzip \
             libssl-dev:i386 libcurl4-openssl-dev:i386
 
       - uses: actions/checkout@v7
@@ -91,10 +91,9 @@ jobs:
             tools/protoc
             lib/libprotobuf-lite.a
             lib/liblibmem.a
-            lib/libyaml-cpp.a
             third_party/protobuf
             third_party/libmem
-            third_party/yaml-cpp
+            third_party/tomlplusplus
           key: deps-${{ runner.os }}-${{ hashFiles('src/sdk/protobufs/slssteam_messages.proto', 'Makefile', 'deps.mk') }}
 
       - name: Build

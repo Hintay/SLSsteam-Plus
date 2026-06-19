@@ -15,7 +15,7 @@
   # Parse ../deps.mk — the single source of truth for fetched dependency versions
   # + hashes, also `include`d by the Makefile. Each entry is a `NAME := VALUE`
   # line; turn the file into an attrset { NAME = "VALUE"; ... }. On the Nix side
-  # libmem and protobuf read from here (lua, yaml-cpp come from nixpkgs); the
+  # libmem and protobuf read from here (lua comes from nixpkgs, toml++ is header-only); the
   # Makefile still uses every entry for its .7z / Arch from-source builds.
   deps = let
     lines = lib.splitString "\n" (builtins.readFile ../deps.mk);
@@ -38,7 +38,7 @@
 
   # Build one i686, ABI-matched static archive (+ its headers) from a CMake source.
   # Used for protobuf-lite and libmem (the deps not available in current nixpkgs);
-  # lua + yaml-cpp come from nixpkgs. The default extraNixCflags (-include stdint.h)
+  # lua comes from nixpkgs. The default extraNixCflags (-include stdint.h)
   # fixes both old libs on modern gcc.
   #   libFile       : path under build/ of the produced .a
   #   headerCopySrc : source-relative dir copied to $out/include/<basename>
@@ -85,7 +85,7 @@
       '';
     };
 
-  # ---- Fetched sources (libmem + protobuf; lua/yaml-cpp come from nixpkgs) -------
+  # ---- Fetched sources (libmem + protobuf; lua from nixpkgs, toml++ header-only) --
   # nixpkgs-unstable has no protobuf 3.15 and does not package libmem at all, so
   # both are fetched from source here (versions/hashes from deps.mk).
 
@@ -192,12 +192,8 @@
     headerCopySrc = "include/libmem";
   };
 
-  # i686 libyaml-cpp.a (static) + headers from nixpkgs (0.8.0), rebuilt ABI=0 to
-  # match. yaml-cpp is internal config parsing (no Steam interop), so the 0.7→0.8
-  # bump is safe; nixpkgs maintains it for modern gcc (no include workarounds).
-  yamlCpp = (i686.yaml-cpp.override {static = true;}).overrideAttrs (old: {
-    NIX_CFLAGS_COMPILE = (old.NIX_CFLAGS_COMPILE or "") + " -D_GLIBCXX_USE_CXX11_ABI=0";
-  });
+  # toml++ from nixpkgs (header-only, arch-independent — no i686 override needed).
+  tomlpp = pkgs.tomlplusplus;
 
   # Lua 5.4 from nixpkgs (i686). It ships a static liblua.a + headers; Lua is C, so
   # the C++ ABI macro is irrelevant. Injected by full path below, so the liblua.a
@@ -236,7 +232,7 @@ in
     nativeBuildInputs = with pkgs; [
       pkg-config
       makeWrapper
-      (python3.withPackages (ps: [ps.pyyaml]))
+      (python3.withPackages (ps: [ps.tomli]))
     ];
 
     buildInputs = with i686; [
@@ -260,8 +256,7 @@ in
         PROTOBUF_INCLUDE=${protobufLite}/include \
         LIBMEM_A=${libmem}/lib/liblibmem.a \
         LIBMEM_INCLUDE=${libmem}/include \
-        YAML_CPP_A=${yamlCpp}/lib/libyaml-cpp.a \
-        YAML_CPP_INCLUDE=${yamlCpp}/include \
+        TOMLPP_INCLUDE=${tomlpp}/include \
         SLSSTEAM_VERSION=${slssteamVersion} \
         SLSSTEAM_COMMIT=${rev} \
         FETCHED_DEP_STAMPS=

@@ -11,18 +11,17 @@ DEFAULT_LUA_A := obj/liblua5.4.a
 DEFAULT_PROTOC := tools/protoc
 DEFAULT_PROTOBUF_LITE_A := lib/libprotobuf-lite.a
 DEFAULT_LIBMEM_A := lib/liblibmem.a
-DEFAULT_YAML_CPP_A := lib/libyaml-cpp.a
 
 srcs := $(shell find src/ -type f -iname "*.cpp")
 srcs := $(filter-out src/patterns.gen.cpp,$(srcs)) src/patterns.gen.cpp
 objs := $(srcs:src/%.cpp=obj/%.o)
 deps := $(objs:%.o=%.d)
 
-# Pattern codegen from res/patterns.yaml (see tools/gen_patterns.py).
+# Pattern codegen from res/patterns.toml (see tools/gen_patterns.py).
 PYTHON ?= python3
 PATTERN_GEN_STAMP := src/.patterns-gen.stamp
-$(PATTERN_GEN_STAMP): res/patterns.yaml tools/gen_patterns.py
-	$(PYTHON) tools/gen_patterns.py res/patterns.yaml src
+$(PATTERN_GEN_STAMP): res/patterns.toml tools/gen_patterns.py
+	$(PYTHON) tools/gen_patterns.py res/patterns.toml src
 	@touch $@
 src/patterns.gen.hpp src/patterns.gen.cpp src/ipchash.gen.hpp: $(PATTERN_GEN_STAMP)
 $(objs): | $(PATTERN_GEN_STAMP)
@@ -56,17 +55,16 @@ LIBMEM_STAMP   ?= $(LIBMEM_DIR)/.fetched-$(LIBMEM_VER)
 LIBMEM_A       ?= $(DEFAULT_LIBMEM_A)
 LIBMEM_INCLUDE ?= $(LIBMEM_DIR)/include
 
-# yaml-cpp is fetched + built at build time for reproducible 32-bit static
-# linking. External builds may override YAML_CPP_A / YAML_CPP_INCLUDE.
-YAML_CPP_DIR     ?= third_party/yaml-cpp
-YAML_CPP_STAMP   ?= $(YAML_CPP_DIR)/.fetched-$(YAML_CPP_VER)
-YAML_CPP_A       ?= $(DEFAULT_YAML_CPP_A)
-YAML_CPP_INCLUDE ?= $(YAML_CPP_DIR)/include
+# toml++ is a header-only C++17 library. No cmake, no .a — just fetch and -isystem.
+TOMLPP_DIR     ?= third_party/tomlplusplus
+TOMLPP_STAMP   ?= $(TOMLPP_DIR)/.fetched-$(TOMLPP_VER)
+TOMLPP_INCLUDE ?= $(TOMLPP_DIR)/include
+
 
 # All static libraries used by the final link. No prebuilt .a files are committed
 # for the default build; external/Nix builds may override these paths.
-STATIC_LIBS ?= $(LIBMEM_A) $(YAML_CPP_A) $(PROTOBUF_LITE_A)
-FETCHED_DEP_STAMPS ?= $(LUA_STAMP) $(PROTOBUF_STAMP) $(LIBMEM_STAMP) $(YAML_CPP_STAMP)
+STATIC_LIBS ?= $(LIBMEM_A) $(PROTOBUF_LITE_A)
+FETCHED_DEP_STAMPS ?= $(LUA_STAMP) $(PROTOBUF_STAMP) $(LIBMEM_STAMP) $(TOMLPP_STAMP)
 
 # The lua 5.4 library sources (everything except the lua.c/luac.c standalone
 # mains). Hard-coded rather than $(wildcard) because the tree does not exist at
@@ -83,7 +81,7 @@ CXXFLAGS += -I$(LUA_INCLUDE)
 # base64 header only.
 CXXFLAGS += -isystem $(PROTOBUF_INCLUDE)
 CXXFLAGS += -isystem $(LIBMEM_INCLUDE)
-CXXFLAGS += -isystem $(YAML_CPP_INCLUDE)
+CXXFLAGS += -isystem $(TOMLPP_INCLUDE)
 CXXFLAGS += -Iobj/proto
 
 LDFLAGS := -shared -Wl,--no-undefined
@@ -110,7 +108,7 @@ ifeq ($(shell type mold &> /dev/null && echo "found"),found)
 endif
 
 # Smoke-test binary: validates Lua VM init + case-insensitive binding lookup.
-# Self-contained: does not link SLSsteam internals (no libmem, no yaml-cpp, etc.).
+# Self-contained: does not link SLSsteam internals (no libmem, no toml++, etc.).
 # Run on the Deck: make lua_smoke && ./bin/lua_smoke
 SMOKE_CXXFLAGS := -m32 -std=c++20 -O0 -g \
                   $(shell pkg-config --cflags "lua5.4")
@@ -188,14 +186,14 @@ $(LIBMEM_STAMP):
 	rm -f "$(LIBMEM_DIR)/libmem.tar.gz" "$(LIBMEM_DIR)/capstone.tar.gz" "$(LIBMEM_DIR)/keystone.tar.gz"
 	touch "$@"
 
-# Fetch + verify + unpack yaml-cpp sources. Network is needed only here; Nix
-# pre-stages this tree + stamp for sandboxed builds.
-$(YAML_CPP_STAMP):
-	@mkdir -p $(YAML_CPP_DIR)
-	curl -fsSL "https://github.com/jbeder/yaml-cpp/archive/refs/tags/$(YAML_CPP_VER).tar.gz" -o "$(YAML_CPP_DIR)/yaml-cpp.tar.gz"
-	printf '%s  %s\n' "$(YAML_CPP_SHA256)" "$(YAML_CPP_DIR)/yaml-cpp.tar.gz" | sha256sum -c -
-	tar xzf "$(YAML_CPP_DIR)/yaml-cpp.tar.gz" -C "$(YAML_CPP_DIR)" --strip-components=1 "yaml-cpp-$(YAML_CPP_VER)"
-	rm -f "$(YAML_CPP_DIR)/yaml-cpp.tar.gz"
+# Fetch + verify + unpack toml++ (header-only). No build step — the stamp
+# signals that headers are present under $(TOMLPP_INCLUDE).
+$(TOMLPP_STAMP):
+	@mkdir -p $(TOMLPP_DIR)
+	curl -fsSL "https://github.com/marzer/tomlplusplus/archive/refs/tags/$(TOMLPP_VER).tar.gz" -o "$(TOMLPP_DIR)/tomlplusplus.tar.gz"
+	printf '%s  %s\n' "$(TOMLPP_SHA256)" "$(TOMLPP_DIR)/tomlplusplus.tar.gz" | sha256sum -c -
+	tar xzf "$(TOMLPP_DIR)/tomlplusplus.tar.gz" -C "$(TOMLPP_DIR)" --strip-components=1 "tomlplusplus-$(TOMLPP_VER:v%=%)"
+	rm -f "$(TOMLPP_DIR)/tomlplusplus.tar.gz"
 	touch "$@"
 
 # Host protoc: download the official prebuilt linux-x86_64 binary for the pinned
@@ -244,22 +242,6 @@ $(DEFAULT_LIBMEM_A): $(LIBMEM_STAMP)
 		-DCMAKE_C_FLAGS="-m32 -fPIC"
 	cmake --build "$(LIBMEM_DIR)/build-static32" --target libmem -j
 	cp "$(LIBMEM_DIR)/build-static32/liblibmem.a" "$(DEFAULT_LIBMEM_A)"
-
-# Build 32-bit yaml-cpp as a static PIC archive. Tests/tools are disabled to keep
-# the build focused on the library needed by SLSsteam.
-$(DEFAULT_YAML_CPP_A): $(YAML_CPP_STAMP)
-	@mkdir -p lib $(YAML_CPP_DIR)/build-static32
-	cmake -S "$(YAML_CPP_DIR)" -B "$(YAML_CPP_DIR)/build-static32" \
-		-DCMAKE_BUILD_TYPE=Release \
-		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-		-DYAML_CPP_BUILD_TESTS=OFF \
-		-DYAML_CPP_BUILD_TOOLS=OFF \
-		-DYAML_CPP_INSTALL=OFF \
-		-DYAML_BUILD_SHARED_LIBS=OFF \
-		-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-		-DCMAKE_CXX_FLAGS="-m32 -fPIC -D_GLIBCXX_USE_CXX11_ABI=0"
-	cmake --build "$(YAML_CPP_DIR)/build-static32" --target yaml-cpp -j
-	cp "$(YAML_CPP_DIR)/build-static32/libyaml-cpp.a" "$(DEFAULT_YAML_CPP_A)"
 
 # Generate the single curated schema at build time. No .pb.cc -> .pb.cpp rename:
 # the generated .cc is compiled directly by an explicit rule below.
@@ -315,7 +297,7 @@ tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber:
 	sh tools/ticket-grabber/build.sh
 
 -include $(deps)
-obj/config.o: src/config.cpp res/config.yaml
+obj/config.o: src/config.cpp res/config.toml
 	$(shell sh ./embed-config.sh)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -isysteminclude -MMD -MP -c $< -o $@
@@ -342,7 +324,7 @@ zips: rebuild
 		"bin/library-inject.so" \
 		"setup.sh" \
 		"docs/LICENSE" \
-		"res/config.yaml" \
+		"res/config.toml" \
 		"tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber"
 
 	#Compatibility for Github issues
@@ -352,13 +334,13 @@ zips: rebuild
 		"bin/library-inject.so" \
 		"setup.sh" \
 		"docs/LICENSE" \
-		"res/config.yaml" \
+		"res/config.toml" \
 		"tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber"
 
 zips-config:
-	7z a -mx9 -m9=lzma "zips/SLSsteam - SLSConfig $(DATE).zip" "$(HOME)/.config/SLSsteam/config.yaml"
+	7z a -mx9 -m9=lzma "zips/SLSsteam - SLSConfig $(DATE).zip" "$(HOME)/.config/SLSsteam/config.toml"
 	#Compatibility for Github issues
-	7z a -mx9 -m9=lzma2 "zips/SLSsteam - SLSConfig $(DATE).7z" "$(HOME)/.config/SLSsteam/config.yaml"
+	7z a -mx9 -m9=lzma2 "zips/SLSsteam - SLSConfig $(DATE).7z" "$(HOME)/.config/SLSsteam/config.toml"
 
 # Build every dependency (fetched/compiled) but NOT the project itself. Lets a
 # build run `make deps` first (deps build serially — each cmake sub-build already

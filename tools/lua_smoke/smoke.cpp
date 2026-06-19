@@ -1,5 +1,5 @@
 // Smoke test for LuaLoader.
-// Self-contained: no SLSsteam internal headers, no libmem, no yaml-cpp, no libcurl.
+// Self-contained: no SLSsteam internal headers, no libmem, no toml++, no libcurl.
 // Inlines the same Lua VM setup logic and real binding implementations
 // as LuaLoader.cpp to verify:
 //   The Lua VM can be created.
