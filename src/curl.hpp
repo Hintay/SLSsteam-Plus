@@ -13,6 +13,11 @@ namespace Curl
 		uint32_t timeoutConnectMs = 5000;
 		uint32_t timeoutTotalMs = 10000;
 		bool reuseConnection = false;
+		// Restrict HTTP redirects to https only (the initial URL protocol is
+		// unaffected). Use for fetches whose response decides hook targets so a
+		// 30x cannot downgrade to cleartext. Off by default to not break http
+		// manifest providers that legitimately redirect.
+		bool httpsOnlyRedirects = false;
 	};
 
 	// Simple GET — kept for backward compatibility; delegates to request().

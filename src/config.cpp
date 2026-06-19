@@ -162,9 +162,8 @@ bool CConfig::loadSettings()
 	automaticFilter = getSetting<bool>(node, "AutoFilterList", true);
 	playNotOwnedGames = getSetting<bool>(node, "PlayNotOwnedGames", false);
 	packageInjection = getSetting<bool>(node, "PackageInjection", true);
-	safeMode = getSetting<bool>(node, "SafeMode", false);
+	onlinePatterns = getSetting<bool>(node, "OnlinePatterns", true);
 	notifications = getSetting<bool>(node, "Notifications", true);
-	warnHashMissmatch = getSetting<bool>(node, "WarnHashMissmatch", false);
 	notifyInit = getSetting<bool>(node, "NotifyInit", true);
 	api = getSetting<bool>(node, "API", true);
 	fakeEmail = getSetting<std::string>(node, "FakeEmail", "");
@@ -180,9 +179,8 @@ bool CConfig::loadSettings()
 	g_pLog->info("AutoFilterList: %i\n", automaticFilter.get());
 	g_pLog->info("PlayNotOwnedGames: %i\n", playNotOwnedGames.get());
 	g_pLog->info("PackageInjection: %i\n", packageInjection.get());
-	g_pLog->info("SafeMode: %i\n", safeMode.get());
+	g_pLog->info("OnlinePatterns: %i\n", onlinePatterns.get());
 	g_pLog->info("Notifications: %i\n", notifications.get());
-	g_pLog->info("WarnHashMissmatch: %i\n", warnHashMissmatch.get());
 	g_pLog->info("NotifyInit: %i\n", notifyInit.get());
 	g_pLog->info("API: %i\n", api.get());
 	g_pLog->info("FakeEmail: %s\n", fakeEmail.get().c_str());

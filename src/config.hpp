@@ -68,9 +68,8 @@ public:
 	MTVariable<bool> automaticFilter;
 	MTVariable<bool> playNotOwnedGames;
 	MTVariable<bool> packageInjection;
-	MTVariable<bool> safeMode;
+	MTVariable<bool> onlinePatterns;
 	MTVariable<bool> notifications;
-	MTVariable<bool> warnHashMissmatch;
 	MTVariable<bool> notifyInit;
 	MTVariable<bool> api;
 	MTVariable<bool> disableCloud;

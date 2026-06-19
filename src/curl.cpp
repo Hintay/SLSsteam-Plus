@@ -101,6 +101,16 @@ int Curl::request(const char* method,
 	// Follow redirects.
 	curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1L);
 
+	// Optionally forbid a redirect from downgrading to a non-https scheme.
+	if (options.httpsOnlyRedirects)
+	{
+#if defined(CURLOPT_REDIR_PROTOCOLS_STR)
+		curl_easy_setopt(handle, CURLOPT_REDIR_PROTOCOLS_STR, "https");
+#else
+		curl_easy_setopt(handle, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
+#endif
+	}
+
 	// Method / body setup.
 	const bool isPost = (method != nullptr && strcasecmp(method, "POST") == 0);
 	if (isPost) {

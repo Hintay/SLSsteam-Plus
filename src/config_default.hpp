@@ -69,16 +69,8 @@ SubscriptionTimestamps:
 #Blocks games from unlocking on wrong accounts
 DenuvoGames:
 
-#Automatically disable SLSsteam when steamclient.so does not match a predefined file hash that is known to work
-#You should enable this if you're planing to use SLSsteam with Steam Deck's gamemode
-SafeMode: no
-
 #Toggles notifications via notify-send
 Notifications: yes
-
-#Warn user via notification when steamclient.so hash differs from known safe hash
-#Mostly useful for development so I don't accidentally miss an update
-WarnHashMissmatch: no
 
 #Notify when SLSsteam is done initializing
 NotifyInit: yes
