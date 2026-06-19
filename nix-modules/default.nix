@@ -235,6 +235,7 @@ in
     nativeBuildInputs = with pkgs; [
       pkg-config
       makeWrapper
+      (python3.withPackages (ps: [ps.pyyaml]))
     ];
 
     buildInputs = with i686; [
