@@ -6,7 +6,8 @@
 #include "log.hpp"
 #include "memhlp.hpp"
 #include "patterns.hpp"
-#include "vftableinfo.hpp"
+#include "ipchash.gen.hpp"
+#include "ipcoutbound.hpp"
 
 #include "sdk/CAppOwnershipInfo.hpp"
 #include "sdk/CProtoBufMsgBase.hpp"
@@ -84,7 +85,7 @@ VFTHook<T>::VFTHook(const char* name) : Hook<T>::Hook(name)
 }
 
 template<typename T>
-bool DetourHook<T>::setup(Pattern_t pattern, T hookFn)
+bool DetourHook<T>::setup(const Pattern_t& pattern, T hookFn)
 {
 	if (pattern.address == LM_ADDRESS_BAD)
 	{
@@ -790,6 +791,23 @@ static bool hkClientAppManager_GetUpdateInfo(void* pClientAppManager, uint32_t a
 	return success;
 }
 
+// Install a VFThook at the slot located by its build-stable funcHash. NO hardcoded-index
+// fallback: resolve the index from the funcHash and install only if found; on a miss, warn
+// loudly and leave the hook uninstalled rather than risk patching the wrong slot.
+template<typename T>
+static void installVFTByFuncHash(VFTHook<T>& hook, const std::shared_ptr<lm_vmt_t>& vft, const char* name, uint32_t funcHash, T hk)
+{
+	const int idx = IpcOutbound::resolveIndex(name, funcHash);
+	if (idx < 0)
+	{
+		g_pLog->warn("VFThook %s: funcHash 0x%08x not located in steamclient — hook NOT installed\n",
+		             hook.name.c_str(), funcHash);
+		return;
+	}
+	hook.setup(vft, static_cast<unsigned int>(idx), hk);
+	hook.place();
+}
+
 __attribute__((hot))
 static void hkClientAppManager_RunIPCFrame(void* pClientAppManager, void* a1, void* a2, void* a3)
 {
@@ -801,15 +819,10 @@ static void hkClientAppManager_RunIPCFrame(void* pClientAppManager, void* a1, vo
 		std::shared_ptr<lm_vmt_t> vft = std::make_shared<lm_vmt_t>();
 		LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientAppManager), vft.get());
 
-		Hooks::IClientAppManager_BIsDlcEnabled.setup(vft, VFTIndexes::IClientAppManager::BIsDlcEnabled, hkClientAppManager_BIsDlcEnabled);
-		Hooks::IClientAppManager_GetAppUpdateInfo.setup(vft, VFTIndexes::IClientAppManager::GetUpdateInfo, hkClientAppManager_GetUpdateInfo);
-		Hooks::IClientAppManager_LaunchApp.setup(vft, VFTIndexes::IClientAppManager::LaunchApp, hkClientAppManager_LaunchApp);
-		Hooks::IClientAppManager_IsAppDlcInstalled.setup(vft, VFTIndexes::IClientAppManager::IsAppDlcInstalled, hkClientAppManager_IsAppDlcInstalled);
-
-		Hooks::IClientAppManager_BIsDlcEnabled.place();
-		Hooks::IClientAppManager_GetAppUpdateInfo.place();
-		Hooks::IClientAppManager_LaunchApp.place();
-		Hooks::IClientAppManager_IsAppDlcInstalled.place();
+		installVFTByFuncHash(Hooks::IClientAppManager_BIsDlcEnabled,     vft, IpcHash::IClientAppManager::kBIsDlcEnabled_Name,     IpcHash::IClientAppManager::kBIsDlcEnabled,     hkClientAppManager_BIsDlcEnabled);
+		installVFTByFuncHash(Hooks::IClientAppManager_GetAppUpdateInfo, vft, IpcHash::IClientAppManager::kGetUpdateInfo_Name,    IpcHash::IClientAppManager::kGetUpdateInfo,     hkClientAppManager_GetUpdateInfo);
+		installVFTByFuncHash(Hooks::IClientAppManager_LaunchApp,        vft, IpcHash::IClientAppManager::kLaunchApp_Name,        IpcHash::IClientAppManager::kLaunchApp,         hkClientAppManager_LaunchApp);
+		installVFTByFuncHash(Hooks::IClientAppManager_IsAppDlcInstalled, vft, IpcHash::IClientAppManager::kIsAppDlcInstalled_Name, IpcHash::IClientAppManager::kIsAppDlcInstalled, hkClientAppManager_IsAppDlcInstalled);
 
 		g_pLog->debug("IClientAppManager->vft at %p\n", vft->vtable);
 		hooked = true;
@@ -881,11 +894,8 @@ static void hkClientApps_RunIPCFrame(void* pClientApps, void* a1, void* a2, void
 		std::shared_ptr<lm_vmt_t> vft = std::make_shared<lm_vmt_t>();
 		LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientApps), vft.get());
 
-		Hooks::IClientApps_GetDLCDataByIndex.setup(vft, VFTIndexes::IClientApps::GetDLCDataByIndex, hkClientApps_GetDLCDataByIndex);
-		Hooks::IClientApps_GetDLCCount.setup(vft, VFTIndexes::IClientApps::GetDLCCount, hkClientApps_GetDLCCount);
-
-		Hooks::IClientApps_GetDLCDataByIndex.place();
-		Hooks::IClientApps_GetDLCCount.place();
+		installVFTByFuncHash(Hooks::IClientApps_GetDLCDataByIndex, vft, IpcHash::IClientApps::kGetDLCDataByIndex_Name, IpcHash::IClientApps::kGetDLCDataByIndex, hkClientApps_GetDLCDataByIndex);
+		installVFTByFuncHash(Hooks::IClientApps_GetDLCCount,       vft, IpcHash::IClientApps::kGetDLCCount_Name,       IpcHash::IClientApps::kGetDLCCount,       hkClientApps_GetDLCCount);
 
 		g_pLog->debug("IClientApps->vft at %p\n", vft->vtable);
 
@@ -909,11 +919,6 @@ static void hkClientApps_RunIPCFrame(void* pClientApps, void* a1, void* a2, void
 // value, later flushes keep stripping that SLS-origin value until Steam restarts.
 static std::mutex                  g_cloudWroteMtx;
 static std::unordered_set<uint32_t> g_cloudWroteApps;
-
-// Set once when the IClientRemoteStorage vtable is first seen: true iff vtable[idx25] is a plausible
-// steamclient code pointer, i.e. the SetCloudEnabledForApp slot looks intact. Gates the raw idx25
-// call below so a Steam-update VFT drift degrades the badge fix instead of crashing on a bad call.
-static bool g_bCloudSetSlotValid = false;
 
 // Snapshot the controlled-app set under a single lock. The strip tests membership against this local
 // copy instead of locking per app-id line, and short-circuits the whole parse when the set is empty.
@@ -1100,27 +1105,6 @@ static uint32_t hkCConfigStore_WriteVdfFile(void* a0, uint32_t a1, uint32_t a2, 
 
 	return Hooks::CConfigStore_WriteVdfFile.tramp.fn(a0, a1, a2, a3, buffer, size);
 }
-// Cheap sanity gate before a raw vtable[index] use: is `p` inside the steamclient module's mapped
-// range? Catches a vtable that was relocated/shrunk or a slot holding null/data on a Steam update
-// (-> skip + warn instead of crashing on the raw call). It does NOT catch a same-size method reorder
-// where the slot still holds a valid steamclient function — robustly detecting that needs a
-// function-signature pattern (RE loop), tracked as a follow-up.
-static bool isSteamClientCodePtr(const void* p)
-{
-	const lm_address_t a = reinterpret_cast<lm_address_t>(p);
-	return a != 0 && g_modSteamClient.base != 0
-	       && a >= g_modSteamClient.base && a < g_modSteamClient.base + g_modSteamClient.size;
-}
-
-// vtable[index] for an object, validated to be a plausible steamclient code pointer (else false).
-static bool isVFuncSlotSane(void* thisPtr, unsigned int index)
-{
-	if (!thisPtr) return false;
-	const lm_address_t* const vtable = *reinterpret_cast<const lm_address_t* const*>(thisPtr);
-	if (!isSteamClientCodePtr(vtable)) return false;
-	return isSteamClientCodePtr(reinterpret_cast<const void*>(vtable[index]));
-}
-
 static bool hkClientRemoteStorage_IsCloudEnabledForApp(void* pClientRemoteStorage, uint32_t appId)
 {
 	const bool enabled = Hooks::IClientRemoteStorage_IsCloudEnabledForApp.originalFn.fn(pClientRemoteStorage, appId);
@@ -1150,20 +1134,20 @@ static bool hkClientRemoteStorage_IsCloudEnabledForApp(void* pClientRemoteStorag
 		// Do it once per app, recursion-safe (SetCloudEnabledForApp re-enters this getter). Record the
 		// appId in g_cloudWroteApps BEFORE the call so the flush strip knows this exact app's
 		// cloudenabled is ours to remove (and never touches genuine user toggles).
-		// Gate the raw idx25 call on the slot-validity check made at hook setup. If a Steam update
-		// drifted the vtable so badly the slot is no longer steamclient code, leave the in-memory
-		// cloud-disable OFF (badge fix then rests on the WriteVdfFile strip alone) rather than calling
-		// into a bad pointer. Don't record the appId in that case — we never wrote its cloudenabled.
+		// Locate SetCloudEnabledForApp's slot by its build-stable funcHash (resolved + cached once).
+		// If the funcHash can't be located, leave the in-memory cloud-disable OFF (badge fix then
+		// rests on the WriteVdfFile strip alone) rather than calling a guessed slot, and don't record
+		// the appId — we never wrote its cloudenabled. No hardcoded-index fallback.
+		static const int setIdx = IpcOutbound::resolveIndex(IpcHash::IClientRemoteStorage::kSetCloudEnabledForApp_Name, IpcHash::IClientRemoteStorage::kSetCloudEnabledForApp);
 		bool doSet = false;
-		if (g_bCloudSetSlotValid)
+		if (setIdx >= 0)
 		{
 			std::lock_guard<std::mutex> lk(g_cloudWroteMtx);
 			doSet = g_cloudWroteApps.insert(appId).second;
 		}
 		if (doSet)
 		{
-			MemHlp::callVFunc<void(*)(void*, uint32_t, bool)>(
-				VFTIndexes::IClientRemoteStorage::SetCloudEnabledForApp, pClientRemoteStorage, appId, false);
+			IpcOutbound::callAt<void(*)(void*, uint32_t, bool)>(setIdx, pClientRemoteStorage, appId, false);
 			g_pLog->once("Cloud-disabled controlled app %u (SetCloudEnabledForApp=false) — suppresses post-hot-reload badge; persist stripped at flush\n", appId);
 		}
 
@@ -1186,35 +1170,9 @@ static void hkClientRemoteStorage_RunIPCFrame(void* pClientRemoteStorage, void* 
 		std::shared_ptr<lm_vmt_t> vft = std::make_shared<lm_vmt_t>();
 		LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientRemoteStorage), vft.get());
 
-		// Hardening: validate vtable[idx25] still holds the real SetCloudEnabledForApp before the badge
-		// fix calls it raw (read the pristine vtable here — we only hook idx24). Preferred check is
-		// FUNCTION IDENTITY: compare the slot against the address a byte-pattern resolves the function
-		// to, which catches a Steam-update VFT reorder where the slot moved to another VALID function.
-		// If the pattern didn't resolve (e.g. the function itself changed), fall back to the weaker
-		// in-module code-pointer sanity (catches only relocation/corruption). Either way a drift is a
-		// loud, safe degradation — never a crash on a bad vcall.
-		{
-			const unsigned int idx = VFTIndexes::IClientRemoteStorage::SetCloudEnabledForApp;
-			const lm_address_t expected = Patterns::IClientRemoteStorage::SetCloudEnabledForApp.address;
-			const lm_address_t* const vtbl = *reinterpret_cast<const lm_address_t* const*>(pClientRemoteStorage);
-			const char* reason;
-			if (expected != LM_ADDRESS_BAD)
-			{
-				g_bCloudSetSlotValid = isSteamClientCodePtr(vtbl) && vtbl[idx] == expected;
-				reason = "pattern resolved; slot mismatch (VFT reorder?)";
-			}
-			else
-			{
-				g_bCloudSetSlotValid = isVFuncSlotSane(pClientRemoteStorage, idx);
-				reason = "identity pattern unresolved; in-module sanity only";
-			}
-			if (!g_bCloudSetSlotValid)
-				g_pLog->warn("Cloud-fix: IClientRemoteStorage vtable[%d] is not SetCloudEnabledForApp (%s) — likely a Steam-update VFT drift. In-memory cloud-disable is OFF (badge fix relies on the WriteVdfFile strip only); re-verify the idx25 index/pattern.\n", idx, reason);
-		}
-
-		Hooks::IClientRemoteStorage_IsCloudEnabledForApp.setup(vft, VFTIndexes::IClientRemoteStorage::IsCloudEnabledForApp, hkClientRemoteStorage_IsCloudEnabledForApp);
-
-		Hooks::IClientRemoteStorage_IsCloudEnabledForApp.place();
+		// (The old vtable[idx25] slot-validity hardening is gone: SetCloudEnabledForApp's slot is now
+		// located by funcHash at call time, which is itself the validity check — a miss skips the call.)
+		installVFTByFuncHash(Hooks::IClientRemoteStorage_IsCloudEnabledForApp, vft, IpcHash::IClientRemoteStorage::kIsCloudEnabledForApp_Name, IpcHash::IClientRemoteStorage::kIsCloudEnabledForApp, hkClientRemoteStorage_IsCloudEnabledForApp);
 
 		g_pLog->debug("IClientRemoteStorage->vft at %p\n", vft->vtable);
 
@@ -1298,11 +1256,8 @@ static void hkClientUtils_RunIPCFrame(void* pClientUtils, void* a1, void* a2, vo
 			std::shared_ptr<lm_vmt_t> vft = std::make_shared<lm_vmt_t>();
 			LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientUtils), vft.get());
 
-			Hooks::IClientUtils_GetAppId.setup(vft, VFTIndexes::IClientUtils::GetAppId, hkClientUtils_GetAppId);
-			Hooks::IClientUtils_GetOfflineMode.setup(vft, VFTIndexes::IClientUtils::GetOfflineMode, hkClientUtils_GetOfflineMode);
-
-			Hooks::IClientUtils_GetAppId.place();
-			Hooks::IClientUtils_GetOfflineMode.place();
+			installVFTByFuncHash(Hooks::IClientUtils_GetAppId,       vft, IpcHash::IClientUtils::kGetAppId_Name,      IpcHash::IClientUtils::kGetAppId,      hkClientUtils_GetAppId);
+			installVFTByFuncHash(Hooks::IClientUtils_GetOfflineMode, vft, IpcHash::IClientUtils::kGetOfflineMode_Name, IpcHash::IClientUtils::kGetOfflineMode, hkClientUtils_GetOfflineMode);
 
 			g_pLog->debug("IClientUtils->vft at %p\n", vft->vtable);
 

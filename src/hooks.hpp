@@ -50,7 +50,7 @@ public:
 	virtual void place();
 	virtual void remove();
 
-	bool setup(Pattern_t pattern, T hookFn);
+	bool setup(const Pattern_t& pattern, T hookFn);
 };
 
 template<typename T>

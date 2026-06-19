@@ -3,7 +3,6 @@
 #include "../hooks.hpp"
 #include "../memhlp.hpp"
 #include "../patterns.hpp"
-#include "../vftableinfo.hpp"
 
 #include "libmem/libmem.h"
 
