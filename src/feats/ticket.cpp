@@ -15,8 +15,7 @@
 #include "../sdk/IClientUtils.hpp"
 
 #include "base64/base64.hpp"
-#include "yaml-cpp/emitter.h"
-#include "yaml-cpp/emittermanip.h"
+#include <toml++/toml.hpp>
 
 #include <exception>
 #include <filesystem>
@@ -67,7 +66,7 @@ std::string Ticket::getTicketDir()
 std::string Ticket::getTicketPath(uint32_t appId)
 {
 	std::stringstream ss;
-	ss << getTicketDir().c_str() << "/ticket_" << appId << ".yaml";
+	ss << getTicketDir().c_str() << "/ticket_" << appId << ".toml";
 
 	return ss.str();
 }
@@ -105,22 +104,20 @@ Ticket::SavedTicket Ticket::getCachedTicket(uint32_t appId)
 		return ticket;
 	}
 
-	std::ifstream ifs(path, std::ios::in);
-
 	g_pLog->debug("Reading ticket for %u\n", appId);
 
 	try
 	{
-		auto node = YAML::LoadFile(path);
-		ticket.steamId = node["steamId"].as<uint32_t>();
+		auto tbl = toml::parse_file(path);
+		ticket.steamId = static_cast<uint32_t>(tbl["steamId"].value_or(int64_t(0)));
 		ticket.ticket = std::string
 		(
-			base64::from_base64(node["ticket"].as<std::string>())
+			base64::from_base64(tbl["ticket"].value_or(std::string()))
 		);
 	}
 	catch (const std::exception& e)
 	{
-		// Corrupt/hand-edited cache file: don't let a YAML/base64 exception unwind
+		// Corrupt/hand-edited cache file: don't let a parse/base64 exception unwind
 		// through the Steam hook thread (→ std::terminate). Treat it as a miss.
 		g_pLog->warn("Ticket: failed to parse cached ticket for %u: %s\n", appId, e.what());
 		return SavedTicket {};
@@ -151,18 +148,10 @@ bool Ticket::saveTicketToCache(CMsgClientGetAppOwnershipTicketResponse* resp)
 
 	auto bytes = resp->ticket();
 
-	YAML::Emitter node;
-	node << YAML::BeginMap;
-	node << YAML::Key << "steamId";
-	node << YAML::Value << g_currentSteamId;
-	node << YAML::Key << "ticket";
-	node << YAML::Value << base64::to_base64(bytes);
-	node << YAML::EndMap;
-
 	const auto path = Ticket::getTicketPath(appId);
 	std::ofstream ofs(path.c_str(), std::ios::out);
-
-	ofs.write(node.c_str(), node.size());
+	ofs << "steamId = " << g_currentSteamId << "\n"
+	    << "ticket = \"" << base64::to_base64(bytes) << "\"\n";
 
 	g_pLog->once("Saved ticket for %u\n", appId);
 
@@ -205,7 +194,7 @@ void Ticket::getTicketOwnershipExtendedData(uint32_t appId)
 std::string Ticket::getEncryptedTicketPath(uint32_t appId)
 {
 	std::stringstream ss;
-	ss << getTicketDir().c_str() << "/encryptedTicket_" << appId << ".yaml";
+	ss << getTicketDir().c_str() << "/encryptedTicket_" << appId << ".toml";
 
 	return ss.str();
 }
@@ -255,17 +244,15 @@ Ticket::SavedTicket Ticket::getCachedEncryptedTicket(uint32_t appId)
 		return ticket;
 	}
 
-	std::ifstream ifs(path, std::ios::in);
-
 	g_pLog->debug("Reading encrypted ticket for %u\n", appId);
 
 	try
 	{
-		auto node = YAML::LoadFile(path);
-		ticket.steamId = node["steamId"].as<uint32_t>();
+		auto tbl = toml::parse_file(path);
+		ticket.steamId = static_cast<uint32_t>(tbl["steamId"].value_or(int64_t(0)));
 		ticket.ticket = std::string
 		(
-			base64::from_base64(node["encryptedTicket"].as<std::string>())
+			base64::from_base64(tbl["encryptedTicket"].value_or(std::string()))
 		);
 	}
 	catch (const std::exception& e)
@@ -298,19 +285,10 @@ bool Ticket::saveEncryptedTicketToCache(CMsgClientRequestEncryptedAppTicketRespo
 
 	auto bytes = resp->SerializeAsString();
 
-	YAML::Emitter node;
-	node << YAML::BeginMap;
-	node << YAML::Key << "steamId";
-	node << YAML::Value << g_currentSteamId;
-	node << YAML::Key << "encryptedTicket";
-	//node << YAML::Value << YAML::EncodeBase64(reinterpret_cast<const unsigned char*>(bytes.c_str()), bytes.size());
-	node << YAML::Value << base64::to_base64(bytes);
-	node << YAML::EndMap;
-
 	const auto path = getEncryptedTicketPath(appId);
 	std::ofstream ofs(path.c_str(), std::ios::out);
-
-	ofs.write(node.c_str(), node.size());
+	ofs << "steamId = " << g_currentSteamId << "\n"
+	    << "encryptedTicket = \"" << base64::to_base64(bytes) << "\"\n";
 
 	g_pLog->once("Saved encrypted ticket for %u\n", appId);
 
