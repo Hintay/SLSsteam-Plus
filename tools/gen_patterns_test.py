@@ -2,37 +2,36 @@ import subprocess, sys, tempfile, os, pathlib
 
 GEN = pathlib.Path(__file__).parent / "gen_patterns.py"
 
-SAMPLE = """
-Patterns:
-  steamclient:
-    LoadDepotDecryptionKey:
-      follow: None
-      candidates:
-        - "55 57 56 53"
-    CUser::GetSubscribedApps:
-      follow: PrologueUpwards
-      prologue: "55 89 E5"
-      candidates: [ "8B 45 08" ]
-    CUser::PostCallback:
-      name: "CSteamEngine::PostCallback"
-      follow: None
-      candidates: [ "AA BB" ]
-  steamui:
-    SomeUIFn:
-      follow: Relative
-      optional: true
-      candidates: [ "E8 ? ? ? ?" ]
-IpcHashes:
-  IClientApps:
-    GetAppData: 0x87D25D33
-    GetDLCCount: 0x6EFFB356
-"""
+SAMPLE = '''
+[Patterns.steamclient."LoadDepotDecryptionKey"]
+follow = "None"
+candidates = ["55 57 56 53"]
 
-def run(yaml_text):
+[Patterns.steamclient."CUser::GetSubscribedApps"]
+follow = "PrologueUpwards"
+prologue = "55 89 E5"
+candidates = ["8B 45 08"]
+
+[Patterns.steamclient."CUser::PostCallback"]
+name = "CSteamEngine::PostCallback"
+follow = "None"
+candidates = ["AA BB"]
+
+[Patterns.steamui."SomeUIFn"]
+follow = "Relative"
+optional = true
+candidates = ["E8 ? ? ? ?"]
+
+[IpcHashes.IClientApps]
+GetAppData = 0x87D25D33
+GetDLCCount = 0x6EFFB356
+'''
+
+def run(toml_text):
     d = tempfile.mkdtemp()
-    yml = os.path.join(d, "patterns.yaml")
-    open(yml, "w").write(yaml_text)
-    r = subprocess.run([sys.executable, str(GEN), yml, d],
+    toml_file = os.path.join(d, "patterns.toml")
+    open(toml_file, "w").write(toml_text)
+    r = subprocess.run([sys.executable, str(GEN), toml_file, d],
                        capture_output=True, text=True)
     return r, d
 
@@ -66,24 +65,22 @@ def test_generates_expected_symbols():
     assert "kGetDLCCount" in ipch, "all IpcHashes entries must appear"
     assert "namespace IClientApps" in ipch
 
-def test_bad_yaml_fails():
-    r, _ = run("Patterns: [ this is not a mapping ]")
+def test_bad_toml_fails():
+    r, _ = run("Patterns = 'not a table'")
     assert r.returncode != 0
 
 def test_escapes_special_chars():
-    y = ("Patterns:\n"
-         "  steamclient:\n"
-         "    Quoted:\n"
-         "      name: 'a\"b'\n"
-         "      follow: None\n"
-         "      candidates: [ '55' ]\n")
-    r, d = run(y)
+    t = ('[Patterns.steamclient."Quoted"]\n'
+         'name = "a\\"b"\n'
+         'follow = "None"\n'
+         'candidates = ["55"]\n')
+    r, d = run(t)
     assert r.returncode == 0, r.stderr
     cpp = open(os.path.join(d, "patterns.gen.cpp")).read()
     assert '"a\\"b"' in cpp, "quote in name must be escaped as a valid C++ literal"
 
 if __name__ == "__main__":
     test_generates_expected_symbols()
-    test_bad_yaml_fails()
+    test_bad_toml_fails()
     test_escapes_special_chars()
     print("gen_patterns_test OK")

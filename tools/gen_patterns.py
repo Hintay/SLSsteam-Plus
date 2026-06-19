@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-# Generate C++ Pattern_t definitions + IpcHash constants from patterns.yaml.
-# Host-side build tool; not shipped in the .so. Single source of truth is the YAML.
-import sys, hashlib, json, yaml
+# Generate C++ Pattern_t definitions + IpcHash constants from patterns.toml.
+# Host-side build tool; not shipped in the .so. Single source of truth is the TOML.
+import sys, hashlib, json
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 MODULE_PTR = {            # module key -> lm_module_t* expression
     "steamclient": "nullptr",        # find() defaults to g_modSteamClient
@@ -22,9 +26,9 @@ def split_name(key):
     return segs[:-1], segs[-1]
 
 def first_hash(val):
-    """Extract the first (baked) hash value from a YAML entry.
+    """Extract the first (baked) hash value from a TOML entry.
     Supports: scalar (0x1234), list of scalars [0x1234, 0x5678],
-    list of maps [{hash: 0x1234}, {hash: 0x5678, max_version: ...}]."""
+    list of maps [{hash = 0x1234}, {hash = 0x5678, max_version = ...}]."""
     if isinstance(val, list):
         item = val[0]
         return item["hash"] if isinstance(item, dict) else item
@@ -81,14 +85,14 @@ def emit(patterns, raw_bytes):
 
 def main():
     if len(sys.argv) != 3:
-        print("usage: gen_patterns.py <patterns.yaml> <out_dir>", file=sys.stderr)
+        print("usage: gen_patterns.py <patterns.toml> <out_dir>", file=sys.stderr)
         sys.exit(2)
-    yml_path, out_dir = sys.argv[1], sys.argv[2]
-    raw = open(yml_path, "rb").read()
+    toml_path, out_dir = sys.argv[1], sys.argv[2]
+    raw = open(toml_path, "rb").read()
     try:
-        doc = yaml.safe_load(raw)
+        doc = tomllib.loads(raw.decode())
         if not isinstance(doc, dict):
-            raise ValueError("YAML root must be a mapping")
+            raise ValueError("TOML root must be a mapping")
         patterns = doc.get("Patterns") or {}
         ipc_hashes = doc.get("IpcHashes") or {}
         if patterns and not isinstance(patterns, dict):
