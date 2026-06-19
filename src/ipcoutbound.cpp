@@ -237,5 +237,36 @@ void IpcOutbound::warmup()
 bool IpcOutbound::hasHash(uint32_t funcHash)
 {
 	std::lock_guard<std::mutex> lk(g_mtx);
+	// Scan .text for funcHash movs without caching segments — ensureSegs would
+	// latch the segment map at a point where .data.rel.ro is still RW (before
+	// RELRO), poisoning the rodata cache for later resolveIndex calls.
+	if (!g_movsScanned && g_modSteamClient.base)
+	{
+		std::vector<Range> textSegs;
+		const auto cb = [](lm_segment_t* seg, lm_void_t* arg) -> lm_bool_t
+		{
+			auto* out = reinterpret_cast<std::vector<Range>*>(arg);
+			const uintptr_t base = static_cast<uintptr_t>(seg->base);
+			const uintptr_t end  = static_cast<uintptr_t>(seg->end);
+			const uintptr_t mlo  = static_cast<uintptr_t>(g_modSteamClient.base);
+			const uintptr_t mhi  = mlo + g_modSteamClient.size;
+			if (end <= mlo || base >= mhi) return LM_TRUE;
+			if (seg->prot & LM_PROT_X)
+				out->push_back({ base, end });
+			return LM_TRUE;
+		};
+		LM_EnumSegments(cb, &textSegs);
+		for (const auto& seg : textSegs)
+		{
+			const uint8_t* const end = reinterpret_cast<const uint8_t*>(seg.hi);
+			for (const uint8_t* p = reinterpret_cast<const uint8_t*>(seg.lo); p + 12 <= end; ++p)
+			{
+				uint32_t h;
+				if (IpcOutbound::matchFuncHashMov(p, h))
+					g_movByHash.emplace(h, reinterpret_cast<uintptr_t>(p));
+			}
+		}
+		g_movsScanned = true;
+	}
 	return g_movByHash.count(funcHash) > 0;
 }

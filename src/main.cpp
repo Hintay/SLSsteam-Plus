@@ -6,7 +6,6 @@
 #include "log.hpp"
 #include "lua/LuaLoader.hpp"
 #include "patterns.hpp"
-#include "update.hpp"
 #include "utils.hpp"
 
 #include "libmem/libmem.h"
@@ -135,8 +134,6 @@ static void setup()
 	ldLibPath.append("/usr/lib:/usr/lib32");
 	setenv("LD_LIBRARY_PATH", ldLibPath.c_str(), true);
 
-	Updater::init();
-
 	setupSuccess = true;
 }
 
@@ -177,21 +174,6 @@ static void load()
 		g_modSteamUI.end
 	);
 	Diagnostics::logStartupModuleSummary();
-
-
-	if (!Updater::verifySafeModeHash())
-	{
-		if (g_config.safeMode.get())
-		{
-			g_pLog->warn("Unknown steamclient.so hash! Aborting...");
-			unload();
-			return;
-		}
-		else if (g_config.warnHashMissmatch.get())
-		{
-			g_pLog->warn("steamclient.so hash missmatch! Please update :)");
-		}
-	}
 
 	// Initialize the Lua VM and execute all .lua plugin files.
 	// Called here — after g_modSteamClient.path is populated (needed by getSteamRoot)

@@ -14,8 +14,18 @@ DEFAULT_LIBMEM_A := lib/liblibmem.a
 DEFAULT_YAML_CPP_A := lib/libyaml-cpp.a
 
 srcs := $(shell find src/ -type f -iname "*.cpp")
+srcs := $(filter-out src/patterns.gen.cpp,$(srcs)) src/patterns.gen.cpp
 objs := $(srcs:src/%.cpp=obj/%.o)
 deps := $(objs:%.o=%.d)
+
+# Pattern codegen from res/patterns.yaml (see tools/gen_patterns.py).
+PYTHON ?= python3
+PATTERN_GEN_STAMP := src/.patterns-gen.stamp
+$(PATTERN_GEN_STAMP): res/patterns.yaml tools/gen_patterns.py
+	$(PYTHON) tools/gen_patterns.py res/patterns.yaml src
+	@touch $@
+src/patterns.gen.hpp src/patterns.gen.cpp src/ipchash.gen.hpp: $(PATTERN_GEN_STAMP)
+$(objs): | $(PATTERN_GEN_STAMP)
 
 # Lua 5.4 is fetched at build time (checksum-verified, NOT committed to git) and
 # built into a static archive linked into the .so. This removes any external
@@ -122,6 +132,13 @@ bin/netpacket_smoke: tools/netpacket_smoke/smoke.cpp src/sdk/RawNetPacket.hpp sr
 	g++ -std=c++20 -m32 -Og -g -o bin/netpacket_smoke tools/netpacket_smoke/smoke.cpp src/sdk/RawNetPacket.cpp
 
 netpacket_smoke: bin/netpacket_smoke
+
+bin/pattern_smoke: tools/pattern_smoke/smoke.cpp src/memhlp_pure.cpp src/memhlp.hpp
+	@mkdir -p bin
+	g++ -std=c++20 -m32 -Og -g -o bin/pattern_smoke tools/pattern_smoke/smoke.cpp src/memhlp_pure.cpp -Iinclude
+
+pattern_smoke: bin/pattern_smoke
+	./bin/pattern_smoke
 
 audit-libs: bin/SLSsteam.so bin/library-inject.so tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber
 
@@ -233,6 +250,7 @@ $(DEFAULT_YAML_CPP_A): $(YAML_CPP_STAMP)
 	@mkdir -p lib $(YAML_CPP_DIR)/build-static32
 	cmake -S "$(YAML_CPP_DIR)" -B "$(YAML_CPP_DIR)/build-static32" \
 		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 		-DYAML_CPP_BUILD_TESTS=OFF \
 		-DYAML_CPP_BUILD_TOOLS=OFF \
 		-DYAML_CPP_INSTALL=OFF \
@@ -311,6 +329,7 @@ obj/%.o : src/%.cpp
 
 clean:
 	rm -rvf "obj/" "bin/" "zips/" "tools/ticket-grabber/bin"
+	rm -f src/patterns.gen.hpp src/patterns.gen.cpp src/ipchash.gen.hpp src/.patterns-gen.stamp
 
 install:
 	sh setup.sh
@@ -352,5 +371,5 @@ build: audit-libs
 rebuild: clean build
 all: clean build zips
 
-.PHONY: all build clean rebuild zips lua_smoke pkg_smoke netpacket_smoke deps
+.PHONY: all build clean rebuild zips lua_smoke pkg_smoke netpacket_smoke pattern_smoke deps
 .NOTPARALLEL: clean rebuild zips
