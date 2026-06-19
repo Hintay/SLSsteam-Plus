@@ -5,14 +5,14 @@
 #include "patterns.hpp"   // for PATTERN_BAKED_HASH (extern, via patterns.gen.hpp)
 #include "utils.hpp"
 
-#include "yaml-cpp/yaml.h"
+#include <toml++/toml.hpp>
 
 
 
 namespace
 {
 	constexpr const char* kUrl =
-		"https://raw.githubusercontent.com/AceSLS/SLSsteam/refs/heads/main/res/patterns.yaml";
+		"https://raw.githubusercontent.com/AceSLS/SLSsteam/refs/heads/main/res/patterns.toml";
 
 	MemHlp::SigFollowMode parseFollow(const std::string& s)
 	{
@@ -30,21 +30,17 @@ namespace
 		return out;
 	}
 
-	uint32_t parseMaxVersion(const YAML::Node& node)
-	{
-		if (node && node.IsScalar())
-			return static_cast<uint32_t>(node.as<unsigned long>());
-		return 0;
-	}
-
-	OnlinePatterns::Entry parsePatternSpec(const YAML::Node& spec)
+	OnlinePatterns::Entry parsePatternSpec(const toml::table& spec)
 	{
 		OnlinePatterns::Entry e;
-		e.follow = parseFollow(spec["follow"] ? spec["follow"].as<std::string>() : "None");
-		if (spec["prologue"]) e.prologue = parsePrologue(spec["prologue"].as<std::string>());
-		e.maxVersion = parseMaxVersion(spec["max_version"]);
-		for (const auto& c : spec["candidates"])
-			e.candidates.push_back(c.as<std::string>());
+		e.follow = parseFollow(spec["follow"].value_or(std::string("None")));
+		if (auto p = spec["prologue"].value<std::string>())
+			e.prologue = parsePrologue(*p);
+		e.maxVersion = static_cast<uint32_t>(spec["max_version"].value_or(int64_t(0)));
+		if (auto* cands = spec["candidates"].as_array())
+			for (const auto& c : *cands)
+				if (auto s = c.value<std::string>())
+					e.candidates.push_back(*s);
 		return e;
 	}
 }
@@ -73,63 +69,78 @@ OnlinePatterns::Overrides OnlinePatterns::fetchAndParse()
 			g_pLog->debug("OnlinePatterns: online hash == baked, skipping\n");
 			return ov;
 		}
-		YAML::Node root = YAML::Load(body);
-		if (root["Patterns"] && root["Patterns"].IsMap())
-		for (const auto& mod : root["Patterns"])
+		auto root = toml::parse(body);
+
+		if (auto* patterns = root["Patterns"].as_table())
 		{
-			for (const auto& fn : mod.second)
+			for (const auto& [modKey, modVal] : *patterns)
 			{
-				const std::string key = fn.first.as<std::string>();
-				const YAML::Node val = fn.second;
-				if (val.IsSequence())
+				const auto* mod = modVal.as_table();
+				if (!mod) continue;
+				for (const auto& [fnKey, fnVal] : *mod)
 				{
-					const std::string effName = (val[0] && val[0]["name"])
-						? val[0]["name"].as<std::string>() : key;
-					auto& vec = ov.byName[effName];
-					for (const auto& item : val)
-						vec.push_back(parsePatternSpec(item));
-				}
-				else if (val.IsMap())
-				{
-					const std::string effName = val["name"] ? val["name"].as<std::string>() : key;
-					ov.byName[effName].push_back(parsePatternSpec(val));
+					const std::string key(fnKey.str());
+					if (auto* arr = fnVal.as_array())
+					{
+						// Array of specs — effective name comes from first element's "name" field
+						std::string effName = key;
+						if (!arr->empty())
+							if (auto* first = arr->front().as_table())
+								if (auto n = (*first)["name"].value<std::string>())
+									effName = *n;
+						auto& vec = ov.byName[effName];
+						for (const auto& item : *arr)
+							if (auto* t = item.as_table())
+								vec.push_back(parsePatternSpec(*t));
+					}
+					else if (auto* tbl = fnVal.as_table())
+					{
+						// Single spec table
+						std::string effName = key;
+						if (auto n = (*tbl)["name"].value<std::string>())
+							effName = *n;
+						ov.byName[effName].push_back(parsePatternSpec(*tbl));
+					}
 				}
 			}
 		}
 
-		if (root["IpcHashes"] && root["IpcHashes"].IsMap())
+		if (auto* ipcHashes = root["IpcHashes"].as_table())
 		{
-			for (const auto& iface : root["IpcHashes"])
+			for (const auto& [ifaceKey, ifaceVal] : *ipcHashes)
 			{
-				const std::string ifaceName = iface.first.as<std::string>();
-				for (const auto& m : iface.second)
+				const std::string ifaceName(ifaceKey.str());
+				const auto* methods = ifaceVal.as_table();
+				if (!methods) continue;
+				for (const auto& [mKey, mVal] : *methods)
 				{
-					const std::string mKey = ifaceName + "::" + m.first.as<std::string>();
-					auto& vec = ov.ipcHashes[mKey];
-					if (m.second.IsSequence())
+					const std::string fullKey = ifaceName + "::" + std::string(mKey.str());
+					auto& vec = ov.ipcHashes[fullKey];
+					if (auto* arr = mVal.as_array())
 					{
-						for (const auto& item : m.second)
+						for (const auto& item : *arr)
 						{
 							VersionedHash hc;
-							if (item.IsMap())
+							if (auto* t = item.as_table())
 							{
-								hc.hash = static_cast<uint32_t>(item["hash"].as<unsigned long>());
-								hc.maxVersion = parseMaxVersion(item["max_version"]);
+								hc.hash = static_cast<uint32_t>((*t)["hash"].value_or(int64_t(0)));
+								hc.maxVersion = static_cast<uint32_t>((*t)["max_version"].value_or(int64_t(0)));
 							}
 							else
 							{
-								hc.hash = static_cast<uint32_t>(item.as<unsigned long>());
+								hc.hash = static_cast<uint32_t>(item.value_or(int64_t(0)));
 							}
 							vec.push_back(hc);
 						}
 					}
 					else
 					{
-						vec.push_back({ static_cast<uint32_t>(m.second.as<unsigned long>()), 0 });
+						vec.push_back({ static_cast<uint32_t>(mVal.value_or(int64_t(0))), 0 });
 					}
 				}
 			}
 		}
+
 		ov.usable = true;
 		g_pLog->info("OnlinePatterns: parsed %zu pattern entries, %zu ipc hashes\n",
 			ov.byName.size(), ov.ipcHashes.size());
