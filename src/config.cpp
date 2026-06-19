@@ -6,13 +6,14 @@
 #include "log.hpp"
 #include "lua/LuaLoader.hpp"
 #include "lua/ManifestProvider.hpp"
-#include "yaml-cpp/yaml.h"
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <regex>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -37,7 +38,7 @@ std::string CConfig::getDir()
 
 std::string CConfig::getPath()
 {
-	return getDir().append("/config.yaml");
+	return getDir().append("/config.toml");
 }
 
 bool CConfig::createFile()
@@ -72,6 +73,629 @@ bool CConfig::createFile()
 	return true;
 }
 
+// ============================================================================
+// TOML config entries that may be absent in configs created before they were
+// introduced. Each entry's block is appended verbatim when the key is not
+// found in the user's TOML file (active or commented). Blocks whose key line
+// starts with '#' serve as reference-only documentation the user can uncomment.
+// ============================================================================
+static const struct { const char* key; const char* block; } kNewConfigEntries[] = {
+	{ "OnlinePatterns",
+	  "# Fetch the latest patterns online (HTTPS) on startup to pick up updated\n"
+	  "# signatures and IpcHashes for new Steam builds without re-downloading SLSsteam.\n"
+	  "#OnlinePatterns = true\n" },
+
+	{ "DisableCloud",
+	  "# Disable cloud saves for unlocked games. Set to false if using CloudRedirect or similar.\n"
+	  "DisableCloud = true\n" },
+
+	{ "AchievementsSchemaProbeNoConnection",
+	  "# For Player.GetUserStats schema probes with sha_schema: set to true to drop\n"
+	  "# those probes for fake-owned apps and inject a fabricated no-connection response.\n"
+	  "#AchievementsSchemaProbeNoConnection = false\n" },
+
+	{ "PackageInjection",
+	  "# Inject added apps into Steam's live package table (pkg0) and re-evaluate\n"
+	  "# licenses without a restart.\n"
+	  "#PackageInjection = true\n" },
+
+	{ "Manifest",
+	  "# Manifest settings for download functionality.\n"
+	  "# Built-in request-code providers: opensteamtool / wudrm / steamrun.\n"
+	  "# Providers is the ordered fallback chain.\n"
+	  "#[Manifest]\n"
+	  "#Providers = [\"opensteamtool\", \"wudrm\", \"steamrun\"]\n"
+	  "#UseLuaManifestOverrides = true\n"
+	  "#TimeoutConnectMs = 5000\n"
+	  "#TimeoutTotalMs = 10000\n"
+	  "#ReuseConnection = true\n" },
+
+	{ "Lua",
+	  "# Additional Lua plugin directories scanned after the built-in Steam and user config dirs.\n"
+	  "#[Lua]\n"
+	  "#Paths = []\n" },
+};
+
+// Check whether a top-level key or section header (active or commented-out)
+// already exists in a TOML config file. Matches lines like:
+//   Key = ...   |   #Key = ...   |   # Key = ...
+//   [Key]       |   #[Key]       |   # [Key]
+//   [Key.       |   #[Key.       |   # [Key.
+static bool configHasKey(const std::string& content, const char* key)
+{
+	// Bare-key forms (Key = ...)
+	const std::string active   = std::string(key) + " ";
+	const std::string activeEq = std::string(key) + "=";
+	const std::string hash     = std::string("#") + key;
+	const std::string hashSp   = std::string("# ") + key;
+	// Section header forms ([Key] or [Key.)
+	const std::string section  = std::string("[") + key;
+	const std::string hashSec  = std::string("#[") + key;
+	const std::string hashSpSec = std::string("# [") + key;
+
+	size_t pos = 0;
+	while (pos < content.size())
+	{
+		const size_t lineEnd = content.find('\n', pos);
+		const size_t len = (lineEnd == std::string::npos ? content.size() : lineEnd) - pos;
+		const std::string_view line(content.data() + pos, len);
+
+		if (line.starts_with(active) || line.starts_with(activeEq) ||
+		    line.starts_with(hash)   || line.starts_with(hashSp)   ||
+		    line.starts_with(section) || line.starts_with(hashSec) || line.starts_with(hashSpSec))
+			return true;
+
+		pos = (lineEnd == std::string::npos) ? content.size() : lineEnd + 1;
+	}
+	return false;
+}
+
+// ============================================================================
+// Built-in YAML → TOML config converter.
+//
+// Two-pass design: bare keys first, [Section] tables last — avoids TOML's
+// section-capture behavior where [Foo] absorbs all subsequent key-value pairs.
+//
+// Ported from tools/yaml_to_toml_config.py (validated against 558-line prod config).
+// ============================================================================
+
+namespace {
+
+static bool isIntegerStr(const std::string& v)
+{
+	if (v.empty()) return false;
+	size_t start = (v[0] == '-') ? 1 : 0;
+	if (start >= v.size()) return false;
+	for (size_t j = start; j < v.size(); ++j)
+		if (!std::isdigit(static_cast<unsigned char>(v[j]))) return false;
+	return true;
+}
+
+static std::string convValue(const std::string& v)
+{
+	{
+		std::string lower = v;
+		for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		if (lower == "yes" || lower == "true" || lower == "on") return "true";
+		if (lower == "no"  || lower == "false" || lower == "off") return "false";
+	}
+	if (v == "[]") return "[]";
+	if (isIntegerStr(v)) return v;
+	if (v.size() >= 2 && v.front() == '"' && v.back() == '"') return v;
+	return "\"" + v + "\"";
+}
+
+// Split "value # comment" into (value, comment). Only splits when the
+// pre-comment part is an integer or quoted string.
+static std::pair<std::string, std::string> stripInlineComment(const std::string& s)
+{
+	// Find " # " or "  #" pattern (whitespace then hash)
+	for (size_t p = 1; p < s.size(); ++p)
+	{
+		if (s[p] == '#' && s[p - 1] == ' ')
+		{
+			std::string val = s.substr(0, p);
+			while (!val.empty() && val.back() == ' ') val.pop_back();
+			std::string comment = (p + 1 < s.size() && s[p + 1] == ' ')
+				? s.substr(p + 2) : s.substr(p + 1);
+			if (isIntegerStr(val) || (val.size() >= 2 && val.front() == '"' && val.back() == '"'))
+				return {val, comment};
+			break;
+		}
+	}
+	return {s, ""};
+}
+
+static std::string quoteArr(const std::vector<std::pair<std::string, std::string>>& items,
+                            bool hasComments)
+{
+	bool allNums = true;
+	for (const auto& [d, _] : items)
+	{
+		if (!isIntegerStr(d)) { allNums = false; break; }
+	}
+
+	if (items.size() <= 5 && !hasComments)
+	{
+		std::string result = "[";
+		for (size_t idx = 0; idx < items.size(); ++idx)
+		{
+			if (idx > 0) result += ", ";
+			if (allNums) result += items[idx].first;
+			else result += "\"" + items[idx].first + "\"";
+		}
+		result += "]";
+		return result;
+	}
+
+	// Multiline
+	std::string result = "[\n";
+	for (const auto& [d, cm] : items)
+	{
+		std::string valStr = allNums ? d : "\"" + d + "\"";
+		if (!cm.empty())
+			result += "  " + valStr + ", # " + cm + "\n";
+		else
+			result += "  " + valStr + ",\n";
+	}
+	result += "]";
+	return result;
+}
+
+// Indentation level of a line (number of leading spaces).
+static size_t indentOf(const std::string& line)
+{
+	size_t n = 0;
+	while (n < line.size() && line[n] == ' ') ++n;
+	return n;
+}
+
+// Trim leading whitespace.
+static std::string lstrip(const std::string& s)
+{
+	size_t n = 0;
+	while (n < s.size() && (s[n] == ' ' || s[n] == '\t')) ++n;
+	return s.substr(n);
+}
+
+// Item types collected from YAML child lines.
+struct YamlItem {
+	enum Type { LIST_ITEM, KV, SUB_SECTION };
+	Type type;
+	std::string key;     // For KV/SUB_SECTION: the sub-key name
+	std::string val;     // For KV/LIST_ITEM: the scalar value
+	std::string comment; // Inline comment if any
+	std::vector<YamlItem> children; // For SUB_SECTION: nested items
+};
+
+// The main YAML→TOML converter.  See Python prototype for specification.
+static std::string convertYamlToToml(const std::string& yamlText)
+{
+	std::vector<std::string> lines;
+	{
+		std::istringstream iss(yamlText);
+		std::string tmp;
+		while (std::getline(iss, tmp))
+			lines.push_back(tmp);
+	}
+
+	// bare_keys: vector of (comment_lines, toml_line)
+	std::vector<std::pair<std::vector<std::string>, std::string>> bareKeys;
+	// sections: vector of (comment_lines, section_name, content_lines)
+	struct Section {
+		std::vector<std::string> comments;
+		std::string name;
+		std::vector<std::string> content;
+	};
+	std::vector<Section> sections;
+	std::vector<std::string> commentBuf;
+
+	size_t i = 0;
+	while (i < lines.size())
+	{
+		const std::string& raw = lines[i];
+		std::string stripped = lstrip(raw);
+		size_t indent = indentOf(raw);
+
+		// Blank or comment line — buffer for attachment to next key
+		if (stripped.empty() || stripped[0] == '#')
+		{
+			commentBuf.push_back(raw);
+			++i;
+			continue;
+		}
+		// Indented line at top level is unexpected — skip with comment
+		if (indent != 0)
+		{
+			commentBuf.push_back("# [skipped] " + raw);
+			++i;
+			continue;
+		}
+
+		// Match "Key: value" or "Key:" (section opener)
+		static const std::regex keyRe(R"(^([\w]+):\s*(.*))");
+		std::smatch km;
+		if (!std::regex_match(stripped, km, keyRe))
+		{
+			commentBuf.push_back(raw);
+			++i;
+			continue;
+		}
+
+		std::string key = km[1].str();
+		std::string val = km[2].str();
+
+		// Pattern 1: "Key: value" — scalar on same line
+		if (!val.empty())
+		{
+			auto [valClean, inlineCmt] = stripInlineComment(val);
+			std::string line = key + " = " + convValue(valClean);
+			if (!inlineCmt.empty()) line += " # " + inlineCmt;
+			bareKeys.push_back({commentBuf, line});
+			commentBuf.clear();
+			++i;
+			continue;
+		}
+
+		// "Key:" with no value — collect children
+		++i;
+		std::vector<YamlItem> l2Items;
+		std::vector<std::pair<std::string, std::string>> l2Comments; // (type="comment", text)
+
+		while (i < lines.size())
+		{
+			const std::string& cr = lines[i];
+			std::string cs = lstrip(cr);
+			size_t ci = indentOf(cr);
+			if (cs.empty()) { ++i; continue; }
+			if (ci < 2 && cs[0] != '#') break;
+			if (cs[0] == '#')
+			{
+				l2Comments.push_back({"comment", cs});
+				++i;
+				continue;
+			}
+
+			if (cs.size() >= 2 && cs[0] == '-' && cs[1] == ' ')
+			{
+				// List item
+				std::string itemRaw = lstrip(cs.substr(2));
+				auto [vc, ic] = stripInlineComment(itemRaw);
+				YamlItem item;
+				item.type = YamlItem::LIST_ITEM;
+				item.val = vc;
+				item.comment = ic;
+				l2Items.push_back(item);
+				++i;
+			}
+			else if (cs.find(':') != std::string::npos)
+			{
+				std::smatch cm2;
+				if (!std::regex_match(cs, cm2, keyRe)) { ++i; continue; }
+				std::string sk = cm2[1].str();
+				std::string sv = cm2[2].str();
+
+				if (!sv.empty())
+				{
+					// Sub-key with value
+					auto [svClean, svCmt] = stripInlineComment(sv);
+					YamlItem item;
+					item.type = YamlItem::KV;
+					item.key = sk;
+					item.val = svClean;
+					item.comment = svCmt;
+					l2Items.push_back(item);
+					++i;
+				}
+				else
+				{
+					// Sub-section: "SubKey:" with deeper children
+					++i;
+					std::vector<YamlItem> l4Items;
+					while (i < lines.size())
+					{
+						const std::string& r4 = lines[i];
+						std::string s4 = lstrip(r4);
+						size_t i4 = indentOf(r4);
+						if (s4.empty()) { ++i; continue; }
+						if (s4[0] == '#' && i4 >= 3) { ++i; continue; }
+						if (i4 < 4) break;
+
+						if (s4.size() >= 2 && s4[0] == '-' && s4[1] == ' ')
+						{
+							std::string v4 = lstrip(s4.substr(2));
+							auto [v4c, v4cm] = stripInlineComment(v4);
+							YamlItem sub;
+							sub.type = YamlItem::LIST_ITEM;
+							sub.val = v4c;
+							sub.comment = v4cm;
+							l4Items.push_back(sub);
+						}
+						else if (s4.find(':') != std::string::npos)
+						{
+							std::smatch cm4;
+							if (std::regex_match(s4, cm4, keyRe))
+							{
+								auto [v4c, v4cm] = stripInlineComment(cm4[2].str());
+								YamlItem sub;
+								sub.type = YamlItem::KV;
+								sub.key = cm4[1].str();
+								sub.val = v4c;
+								sub.comment = v4cm;
+								l4Items.push_back(sub);
+							}
+						}
+						++i;
+					}
+
+					YamlItem item;
+					item.type = YamlItem::SUB_SECTION;
+					item.key = sk;
+					item.children = std::move(l4Items);
+					l2Items.push_back(item);
+				}
+			}
+			else
+			{
+				++i;
+			}
+		}
+
+		// Classify and emit
+		if (l2Items.empty())
+		{
+			bareKeys.push_back({commentBuf, "# " + key + ": (empty, using default)"});
+			commentBuf.clear();
+			continue;
+		}
+
+		// All list items → array (bare key)
+		bool allList = true;
+		for (const auto& it : l2Items)
+			if (it.type != YamlItem::LIST_ITEM) { allList = false; break; }
+
+		if (allList)
+		{
+			std::vector<std::pair<std::string, std::string>> items;
+			for (const auto& it : l2Items)
+				items.push_back({it.val, it.comment});
+			bool hasCmt = !l2Comments.empty();
+			for (const auto& [_, cm] : items)
+				if (!cm.empty()) { hasCmt = true; break; }
+			std::string arrStr = quoteArr(items, hasCmt);
+
+			if (arrStr.find('\n') != std::string::npos)
+			{
+				// Insert section-level comments at top of multiline array
+				auto arrLines = std::vector<std::string>();
+				{
+					std::istringstream iss(arrStr);
+					std::string tmp;
+					while (std::getline(iss, tmp))
+						arrLines.push_back(tmp);
+				}
+				std::string result = arrLines[0] + "\n";
+				for (const auto& [_, cc] : l2Comments)
+					result += "  " + cc + "\n";
+				for (size_t idx = 1; idx < arrLines.size(); ++idx)
+					result += arrLines[idx] + (idx + 1 < arrLines.size() ? "\n" : "");
+				bareKeys.push_back({commentBuf, key + " = " + result});
+			}
+			else
+			{
+				bareKeys.push_back({commentBuf, key + " = " + arrStr});
+			}
+			commentBuf.clear();
+			continue;
+		}
+
+		// Check for nested sub-sections with children
+		bool hasNested = false;
+		for (const auto& it : l2Items)
+			if (it.type == YamlItem::SUB_SECTION && !it.children.empty())
+			{ hasNested = true; break; }
+
+		if (hasNested)
+		{
+			// Check if ALL sub-sections have KV children (DlcData pattern)
+			bool allSubKv = true;
+			bool hasSubLists = false;
+			for (const auto& it : l2Items)
+			{
+				if (it.type != YamlItem::SUB_SECTION || it.children.empty()) continue;
+				for (const auto& c : it.children)
+				{
+					if (c.type == YamlItem::LIST_ITEM) hasSubLists = true;
+					if (c.type != YamlItem::KV) allSubKv = false;
+				}
+			}
+
+			if (allSubKv && !hasSubLists)
+			{
+				// DlcData pattern: [Key.SubKey] tables
+				for (const auto& it : l2Items)
+				{
+					if (it.type != YamlItem::SUB_SECTION || it.children.empty()) continue;
+					std::vector<std::string> sub;
+					for (const auto& c : it.children)
+					{
+						std::string line = c.key + " = " + convValue(c.val);
+						if (!c.comment.empty()) line += " # " + c.comment;
+						sub.push_back(line);
+					}
+					sections.push_back({commentBuf, key + "." + it.key, sub});
+					commentBuf.clear();
+				}
+			}
+			else
+			{
+				// Mixed or DenuvoGames pattern: [Key] with flat entries
+				std::vector<std::string> content;
+				for (const auto& it : l2Items)
+				{
+					if (it.type == YamlItem::KV)
+					{
+						std::string line = it.key + " = " + convValue(it.val);
+						if (!it.comment.empty()) line += " # " + it.comment;
+						content.push_back(line);
+					}
+					else if (it.type == YamlItem::SUB_SECTION && !it.children.empty())
+					{
+						// Check if all children are list items
+						bool childAllList = true;
+						for (const auto& c : it.children)
+							if (c.type != YamlItem::LIST_ITEM) { childAllList = false; break; }
+
+						if (childAllList)
+						{
+							std::vector<std::pair<std::string, std::string>> items;
+							for (const auto& c : it.children)
+								items.push_back({c.val, c.comment});
+							content.push_back(it.key + " = " + quoteArr(items, false));
+						}
+						else
+						{
+							for (const auto& c : it.children)
+							{
+								std::string line = c.key + " = " + convValue(c.val);
+								if (!c.comment.empty()) line += " # " + c.comment;
+								content.push_back(line);
+							}
+						}
+					}
+				}
+				sections.push_back({commentBuf, key, content});
+				commentBuf.clear();
+			}
+		}
+		else
+		{
+			// Simple table: [Key] with flat sub-keys or sub-lists
+			std::vector<std::string> content;
+			for (const auto& it : l2Items)
+			{
+				if (it.type == YamlItem::KV)
+				{
+					std::string line = it.key + " = " + convValue(it.val);
+					if (!it.comment.empty()) line += " # " + it.comment;
+					content.push_back(line);
+				}
+				else if (it.type == YamlItem::SUB_SECTION && !it.children.empty())
+				{
+					std::vector<std::pair<std::string, std::string>> items;
+					for (const auto& c : it.children)
+						items.push_back({c.val, c.comment});
+					content.push_back(it.key + " = " + quoteArr(items, false));
+				}
+				else if (it.type == YamlItem::SUB_SECTION && it.children.empty())
+				{
+					content.push_back(it.key + " = []");
+				}
+			}
+			sections.push_back({commentBuf, key, content});
+			commentBuf.clear();
+		}
+	}
+
+	// Two-pass output: bare keys first, then sections
+	std::string out;
+	for (const auto& [comments, line] : bareKeys)
+	{
+		for (const auto& c : comments) out += c + "\n";
+		out += line + "\n";
+	}
+	for (const auto& sec : sections)
+	{
+		out += "\n";
+		for (const auto& c : sec.comments) out += c + "\n";
+		out += "[" + sec.name + "]\n";
+		for (const auto& l : sec.content) out += l + "\n";
+	}
+	// Trailing comment buffer
+	for (const auto& c : commentBuf) out += c + "\n";
+
+	// Remove trailing newline to match Python output (join vs concat)
+	if (!out.empty() && out.back() == '\n') out.pop_back();
+
+	return out;
+}
+
+} // anonymous namespace
+
+void CConfig::migrateConfig()
+{
+	const std::string tomlPath = getPath();
+	const std::string yamlPath = getDir() + "/config.yaml";
+
+	// Phase 1: YAML → TOML conversion (only if config.yaml exists and config.toml does not)
+	if (!std::filesystem::exists(tomlPath) && std::filesystem::exists(yamlPath))
+	{
+		std::string yamlContent;
+		{
+			std::ifstream in(yamlPath, std::ios::binary);
+			if (!in)
+			{
+				g_pLog->notify("Config: cannot read %s for migration\n", yamlPath.c_str());
+				return;
+			}
+			yamlContent.assign(std::istreambuf_iterator<char>(in),
+			                   std::istreambuf_iterator<char>());
+		}
+
+		std::string tomlContent = convertYamlToToml(yamlContent);
+
+		{
+			std::ofstream out(tomlPath, std::ios::binary);
+			if (!out)
+			{
+				g_pLog->notify("Config: cannot write %s\n", tomlPath.c_str());
+				return;
+			}
+			out << tomlContent;
+			out.flush();
+		}
+
+		// Rename old config to .bak
+		std::error_code ec;
+		std::filesystem::rename(yamlPath, yamlPath + ".bak", ec);
+		if (ec)
+			g_pLog->info("Config: could not rename %s to .bak: %s\n",
+			             yamlPath.c_str(), ec.message().c_str());
+
+		g_pLog->info("Config: migrated YAML → TOML (%s)\n", tomlPath.c_str());
+	}
+
+	// Phase 2: Append missing TOML entries to an existing config.toml
+	if (!std::filesystem::exists(tomlPath))
+		return;
+
+	std::string content;
+	{
+		std::ifstream in(tomlPath, std::ios::binary);
+		if (!in) return;
+		content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+	}
+
+	std::string toAppend;
+	for (const auto& entry : kNewConfigEntries)
+	{
+		if (configHasKey(content, entry.key))
+			continue;
+		toAppend += '\n';
+		toAppend += entry.block;
+	}
+
+	if (toAppend.empty())
+		return;
+
+	std::ofstream out(tomlPath, std::ios::app);
+	if (!out) return;
+	out << "\n# --- New options (SLSsteam update) ---" << toAppend;
+	out.flush();
+
+	g_pLog->info("Config: migrated %s — appended new entries\n", tomlPath.c_str());
+}
+
 static void onFileChange(const std::string& path, uint32_t mask)
 {
 	(void)path;
@@ -97,7 +721,8 @@ static void collectAppIdDelta(const std::unordered_set<uint32_t>& previous,
 
 bool CConfig::init()
 {
-	if(createFile())
+	migrateConfig(); // Try YAML→TOML conversion first (before createFile)
+	if(createFile()) // Creates from template only if config.toml doesn't exist
 	{
 		watcher = new CFileWatcher(onFileChange);
 		watcher->addFile(getPath().c_str());
@@ -122,16 +747,6 @@ void CConfig::shutdown()
 	}
 }
 
-void CConfig::setError(ELoadError err)
-{
-	if (__loadErrors.get() > err)
-	{
-		return;
-	}
-
-	__loadErrors = err;
-}
-
 bool CConfig::loadSettings()
 {
 	const bool queueLiveAppIdChanges = LuaLoader::initDone();
@@ -139,23 +754,19 @@ bool CConfig::loadSettings()
 		? addedAppIds.get()
 		: std::unordered_set<uint32_t>();
 
-	YAML::Node node;
+	toml::table node;
 	try
 	{
-		node = YAML::LoadFile(getPath());
+		node = toml::parse_file(getPath());
 	}
-	catch (YAML::BadFile& bf)
+	catch (const toml::parse_error& pe)
 	{
-		g_pLog->notifyLong("Can not read config.yaml! %s\nUsing defaults", bf.msg.c_str());
-		node = YAML::Node(); //Create empty node and let defaults kick in
-	}
-	catch (YAML::ParserException& pe)
-	{
-		g_pLog->notifyLong("Error parsing config.yaml! %s\nUsing defaults", pe.msg.c_str());
-		node = YAML::Node(); //Create empty node and let defaults kick in
+		g_pLog->notifyLong("Error parsing config.toml! %.*s\nUsing defaults",
+			static_cast<int>(pe.description().size()), pe.description().data());
+		node = toml::table{};
 	}
 
-	__loadErrors = ELoadError::None;
+	__parseError = false;
 	
 	disableFamilyLock = getSetting<bool>(node, "DisableFamilyShareLock", true);
 	useWhiteList = getSetting<bool>(node, "UseWhitelist", false);
@@ -197,71 +808,64 @@ bool CConfig::loadSettings()
 	gameTitles = getMap<uint32_t, std::string>(node, "GameTitles");
 	subscriptionTimestamps = getMap<uint32_t, uint32_t>(node, "SubscriptionTimestamps");
 
-	// AdditionalApps + AppTokens carry a yaml baseline that reconcileIntoConfig()
-	// unions the live lua tables onto. Parse them into locals and record the yaml
+	// AdditionalApps + AppTokens carry a config-file baseline that reconcileIntoConfig()
+	// unions the live lua tables onto. Parse them into locals and record the config
 	// baseline first (supports lua hot-removal, not just union add).
-	const auto yamlAdditional = getList<uint32_t>(node, "AdditionalApps");
-	const auto yamlTokens     = getMap<uint32_t, uint64_t>(node, "AppTokens");
-	yamlAddedAppIds = yamlAdditional;
-	yamlAppTokens   = yamlTokens;
+	const auto cfgAdditional = getList<uint32_t>(node, "AdditionalApps");
+	const auto cfgTokens     = getMap<uint32_t, uint64_t>(node, "AppTokens");
+	yamlAddedAppIds = cfgAdditional;
+	yamlAppTokens   = cfgTokens;
 
 	// Atomic-replace guard for the FileWatcher hot-reload window: when reconcile runs
 	// (queueLiveAppIdChanges) it performs the single locked addedAppIds/appTokens =
-	// yaml ∪ lua write below, so the live sets transition old→new in one step and are
-	// never transiently narrowed to the yaml-only subset. A narrowed set would briefly
+	// config ∪ lua write below, so the live sets transition old→new in one step and are
+	// never transiently narrowed to the config-only subset. A narrowed set would briefly
 	// drop lua addappid ids, flipping isControlledApp and thus per-app cloud/ownership
 	// decisions mid-reload. On initial load (lua not up yet, reconcile gated off)
-	// assign the yaml set directly.
+	// assign the config set directly.
 	if (!queueLiveAppIdChanges)
 	{
-		addedAppIds = yamlAdditional;
-		appTokens   = yamlTokens;
+		addedAppIds = cfgAdditional;
+		appTokens   = cfgTokens;
 	}
 
-	//Do not warn for these (yet?)
-	const auto idleStatusNode = node["IdleStatus"];
-	if (idleStatusNode)
+	if (auto* idleNode = node["IdleStatus"].as_table())
 	{
 		try
 		{
-			auto appId = idleStatusNode["AppId"].as<uint32_t>();
-			auto title = idleStatusNode["Title"].as<std::string>();
+			auto appId = static_cast<uint32_t>((*idleNode)["AppId"].value_or(int64_t(0)));
+			auto title = (*idleNode)["Title"].value_or(std::string(""));
 
-			idleStatus = FakeGame_t
-			{
-				appId,
-				title
-			};
+			idleStatus = FakeGame_t { appId, title };
 
 			g_pLog->info("Idle status %s with AppId %u\n", title.c_str(), appId);
 		}
 		catch(...)
 		{
-			//g_pLog->warn("Failed to parse IdleStatus!");A
-			setError(ELoadError::ParsingException);
+			__parseError = true;
 		}
 	}
 
-	const auto dlcDataNode = node["DlcData"];
-	if(dlcDataNode)
+	if (auto* dlcNode = node["DlcData"].as_table())
 	{
 		auto _dlcData = dlcData.empty();
 
-		for(auto& app : dlcDataNode)
+		for (const auto& [appKey, appVal] : *dlcNode)
 		{
 			try
 			{
-				const uint32_t parentId = app.first.as<uint32_t>();
+				const uint32_t parentId = static_cast<uint32_t>(std::stoul(std::string(appKey.str())));
 
 				CDlcData data;
 				data.parentId = parentId;
 				g_pLog->info("Adding DlcData for %u\n", parentId);
 
-				for(auto& dlc : app.second)
+				auto* dlcs = appVal.as_table();
+				if (!dlcs) continue;
+				for (const auto& [dlcKey, dlcVal] : *dlcs)
 				{
-					const uint32_t dlcId = dlc.first.as<uint32_t>();
-					//There's more efficient types to store strings, but they mostly do not work
-					const std::string dlcName = dlc.second.as<std::string>();
+					const uint32_t dlcId = static_cast<uint32_t>(std::stoul(std::string(dlcKey.str())));
+					const std::string dlcName = dlcVal.value_or(std::string(""));
 
 					data.dlcIds[dlcId] = dlcName;
 					g_pLog->info("DlcId %u -> %s\n", dlcId, dlcName.c_str());
@@ -271,131 +875,74 @@ bool CConfig::loadSettings()
 			}
 			catch(...)
 			{
-				//g_pLog->notify("Failed to parse DlcData!");
-				setError(ELoadError::ParsingException);
+				__parseError = true;
 				break;
 			}
 		}
 
 		dlcData = _dlcData;
 	}
-	else
-	{
-		//g_pLog->notify("Missing DlcData entry in config!");
-		setError(ELoadError::MissingKey);
-	}
 
-	const auto denuvoGamesNode = node["DenuvoGames"];
-	if (denuvoGamesNode)
+	if (auto* denuvoNode = node["DenuvoGames"].as_table())
 	{
 		auto _denuvoGames = denuvoGames.empty();
 
-		for (auto& steamIdNode : denuvoGamesNode)
+		for (const auto& [steamKey, steamVal] : *denuvoNode)
 		{
 			try
 			{
-				const uint32_t steamId = steamIdNode.first.as<uint32_t>();
+				const uint32_t steamId = static_cast<uint32_t>(std::stoul(std::string(steamKey.str())));
 				_denuvoGames[steamId] = std::unordered_set<uint32_t>();
 
-				for (auto& appIdNode : steamIdNode.second)
+				auto* appArr = steamVal.as_array();
+				if (!appArr) continue;
+				for (const auto& appNode : *appArr)
 				{
-					const uint32_t appId = appIdNode.as<uint32_t>();
-					_denuvoGames[steamId].emplace(appId);
+					auto v = appNode.value<int64_t>();
+					if (v)
+					{
+						_denuvoGames[steamId].emplace(static_cast<uint32_t>(*v));
 
-					//Again, not loggin SteamId because of privacy
-					g_pLog->info("Added DenuvoGame %u\n", appId);
+						//Not logging SteamId for privacy
+						g_pLog->info("Added DenuvoGame %u\n", static_cast<uint32_t>(*v));
+					}
 				}
 			}
 			catch (...)
 			{
-				//g_pLog->notify("Failed to parse DenuvoGames!");
-				setError(ELoadError::ParsingException);
+				__parseError = true;
 			}
 		}
 
 		denuvoGames.set(_denuvoGames);
 	}
-	else
-	{
-		//g_pLog->notify("Missing DenuvoGames entry in config!");
-		setError(ELoadError::MissingKey);
-	}
-
 	// Manifest — optional nested section. Manifest.Providers selects the request-code provider
-	// chain (scalar or list; see below), passed to ManifestProvider::setProviders() after load.
+	// chain (array or scalar string), passed to ManifestProvider::setProviders() after load.
 	// If absent/empty, restore the default chain (opensteamtool -> wudrm -> steamrun), which makes
 	// config hot-reload behave the same as a fresh start.
 	{
-		const auto manifestNode = node["Manifest"];
 		std::vector<std::string> providerList;
 		bool useLuaOverrides = true;
 		uint32_t timeoutConnectMs = 5000;
 		uint32_t timeoutTotalMs = 10000;
 		bool reuseConnection = true;
-		// Manifest.Providers — the ordered request-code provider chain. Accepts either a single
-		// scalar (`Providers: wudrm`) or a list (`Providers: [opensteamtool, wudrm, steamrun]`).
-		if (manifestNode && manifestNode["Providers"])
+		if (auto* mfst = node["Manifest"].as_table())
 		{
-			try
+			// Manifest.Providers — accepts either an array or a single string.
+			if (auto* prov = (*mfst)["Providers"].as_array())
 			{
-				const auto pnode = manifestNode["Providers"];
-				if (pnode.IsSequence())
-					for (const auto& n : pnode) providerList.push_back(n.as<std::string>());
-				else if (pnode.IsScalar())
-					providerList.push_back(pnode.as<std::string>());
+				for (const auto& p : *prov)
+					if (auto s = p.value<std::string>())
+						providerList.push_back(*s);
 			}
-			catch (...)
+			else if (auto s = (*mfst)["Providers"].value<std::string>())
 			{
-				// A bad element (e.g. a nested node where a scalar is expected) throws mid-loop; discard
-				// the half-parsed prefix so we fall back to the default chain instead of silently
-				// applying a truncated one.
-				providerList.clear();
-				setError(ELoadError::ParsingException);
+				providerList.push_back(*s);
 			}
-		}
-		if (manifestNode && manifestNode["UseLuaManifestOverrides"])
-		{
-			try
-			{
-				useLuaOverrides = manifestNode["UseLuaManifestOverrides"].as<bool>();
-			}
-			catch (...)
-			{
-				setError(ELoadError::ParsingException);
-			}
-		}
-		if (manifestNode && manifestNode["TimeoutConnectMs"])
-		{
-			try
-			{
-				timeoutConnectMs = manifestNode["TimeoutConnectMs"].as<uint32_t>();
-			}
-			catch (...)
-			{
-				setError(ELoadError::ParsingException);
-			}
-		}
-		if (manifestNode && manifestNode["TimeoutTotalMs"])
-		{
-			try
-			{
-				timeoutTotalMs = manifestNode["TimeoutTotalMs"].as<uint32_t>();
-			}
-			catch (...)
-			{
-				setError(ELoadError::ParsingException);
-			}
-		}
-		if (manifestNode && manifestNode["ReuseConnection"])
-		{
-			try
-			{
-				reuseConnection = manifestNode["ReuseConnection"].as<bool>();
-			}
-			catch (...)
-			{
-				setError(ELoadError::ParsingException);
-			}
+			useLuaOverrides = (*mfst)["UseLuaManifestOverrides"].value_or(true);
+			timeoutConnectMs = static_cast<uint32_t>((*mfst)["TimeoutConnectMs"].value_or(int64_t(5000)));
+			timeoutTotalMs = static_cast<uint32_t>((*mfst)["TimeoutTotalMs"].value_or(int64_t(10000)));
+			reuseConnection = (*mfst)["ReuseConnection"].value_or(true);
 		}
 		useLuaManifestOverrides = useLuaOverrides;
 		manifestTimeoutConnectMs = timeoutConnectMs;
@@ -406,8 +953,6 @@ bool CConfig::loadSettings()
 			manifestTimeoutConnectMs.get(), manifestTimeoutTotalMs.get());
 		g_pLog->info("Manifest.ReuseConnection: %i\n", manifestReuseConnection.get());
 		// Apply the configured chain; absent/empty Providers restores the default all-built-ins chain.
-		// Keep the full chain in g_config.manifestProvider for diagnostics/display only; behavior reads
-		// ManifestProvider's active chain directly.
 		if (providerList.empty())
 			ManifestProvider::resetProviders();
 		else
@@ -416,24 +961,14 @@ bool CConfig::loadSettings()
 	}
 
 	// Lua.Paths — optional list of extra directories to scan for .lua plugin files.
-	// Missing or empty section is silently ignored (no setError — it is optional).
+	// Missing or empty section is silently ignored (it is optional).
 	{
-		const auto luaNode = node["Lua"];
 		std::vector<std::string> paths;
-		if (luaNode && luaNode["Paths"])
-		{
-			for (const auto& entry : luaNode["Paths"])
-			{
-				try
-				{
-					paths.push_back(entry.as<std::string>());
-				}
-				catch (...)
-				{
-					setError(ELoadError::ParsingException);
-				}
-			}
-		}
+		if (auto* luaNode = node["Lua"].as_table())
+			if (auto* arr = (*luaNode)["Paths"].as_array())
+				for (const auto& entry : *arr)
+					if (auto s = entry.value<std::string>())
+						paths.push_back(*s);
 		luaPaths = paths;
 		if (!paths.empty())
 		{
@@ -441,23 +976,14 @@ bool CConfig::loadSettings()
 		}
 	}
 
-	switch(__loadErrors.get())
-	{
-		case ELoadError::MissingKey:
-			g_pLog->notify("Issues during config loading encountered! Missing key(s)");
-			break;
-		case ELoadError::ParsingException:
-			g_pLog->notify("Issues during config loading encountered! Parsing error(s)");
-			break;
+	if (__parseError)
+		g_pLog->notify("Issues during config loading encountered! Parsing error(s)");
+	__parseError = false;
 
-		default:
-			break;
-	}
-
-	// Perform the single atomic addedAppIds/appTokens = yaml ∪ lua write. This matters
+	// Perform the single atomic addedAppIds/appTokens = config ∪ lua write. This matters
 	// on FileWatcher hot-reload, where loadSettings() re-runs but LuaLoader::init()
 	// does NOT — without this, lua-only appIds would vanish from g_config until a
-	// restart. The yaml baseline was parsed into yamlAddedAppIds/yamlAppTokens above
+	// restart. The config baseline was parsed into yamlAddedAppIds/yamlAppTokens above
 	// but the live sets were intentionally NOT narrowed to it (see the atomic-replace
 	// guard), so on hot-reload this update is the sole writer of the live sets.
 	//

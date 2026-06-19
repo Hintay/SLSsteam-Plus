@@ -1,4 +1,4 @@
-static const char* defaultConfig = R"(# ============================================================================
+# ============================================================================
 # SLSsteam Configuration
 # ============================================================================
 # Lines starting with # are comments. Uncomment (remove #) to activate.
@@ -121,4 +121,3 @@ LogLevel = 2
 # Additional Lua plugin directories scanned after the built-in Steam and user config dirs.
 #[Lua]
 #Paths = []
-)";

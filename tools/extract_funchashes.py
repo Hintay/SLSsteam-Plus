@@ -273,7 +273,7 @@ def _print_results(results):
 
 
 def _merge_hash(old_val, new_hash: int, version: int):
-    """Merge a new hash into an existing YAML entry, preserving old values with max_version.
+    """Merge a new hash into an existing TOML entry, preserving old values with max_version.
 
     Returns the merged value: a scalar (if unchanged or first entry) or a list
     of versioned candidates.
@@ -311,14 +311,17 @@ def _merge_hash(old_val, new_hash: int, version: int):
     return entries
 
 
-def _update_yaml(results, yaml_path: Path, version: int):
-    """Update the IpcHashes section in patterns.yaml, preserving old hashes as versioned candidates."""
-    import yaml
+def _update_toml(results, toml_path: Path, version: int):
+    """Update the IpcHashes section in patterns.toml, preserving old hashes as versioned candidates."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
 
-    text = yaml_path.read_text()
-    doc = yaml.safe_load(text)
+    text = toml_path.read_text()
+    doc = tomllib.loads(text)
     if not isinstance(doc, dict):
-        raise RuntimeError(f"{yaml_path} root is not a mapping")
+        raise RuntimeError(f"{toml_path} root is not a mapping")
 
     by_iface: dict = {}
     for r in results:
@@ -339,37 +342,43 @@ def _update_yaml(results, yaml_path: Path, version: int):
                 methods[m] = old_v
         merged[iface] = methods
 
-    lines = ["IpcHashes:"]
-    first_iface = True
+    lines = []
     for iface, methods in merged.items():
-        if not first_iface:
-            lines.append("")
-        first_iface = False
-        lines.append(f"  {iface}:")
+        lines.append(f"[IpcHashes.{iface}]")
         for m, val in methods.items():
             if isinstance(val, int):
-                lines.append(f"    {m}: 0x{val:08X}")
+                lines.append(f"{m} = 0x{val:08X}")
             else:
-                lines.append(f"    {m}:")
+                items = []
                 for entry in val:
                     h = entry["hash"]
                     mv = entry.get("max_version")
-                    lines.append(f"      - hash: 0x{h:08X}")
-                    if mv is not None:
-                        lines.append(f"        max_version: {mv}")
+                    s = f"{{ hash = 0x{h:08X}"
+                    if mv:
+                        s += f", max_version = {mv}"
+                    s += " }"
+                    items.append(s)
+                lines.append(f"{m} = [{', '.join(items)}]")
+        lines.append("")
     new_section = "\n".join(lines) + "\n"
 
     import re as _re
-    pattern = _re.compile(r'^IpcHashes:\n(?:(?:  .+|)\n)*', _re.MULTILINE)
+    # Match all [IpcHashes.*] sections until the next non-IpcHashes section or EOF.
+    # Without DOTALL so '.' does not cross newlines; the trailing (?:...|\Z) handles
+    # both "next section starts" and "end of file" cases.
+    pattern = _re.compile(
+        r'^\[IpcHashes\.\w+\].*?(?=^\[[^I]|\Z)',
+        _re.MULTILINE | _re.DOTALL,
+    )
     if pattern.search(text):
         text = pattern.sub(new_section, text)
     else:
         text = text.rstrip() + "\n\n" + new_section
 
-    yaml_path.write_text(text)
+    toml_path.write_text(text)
     changed = sum(1 for iface in merged.values()
                   for v in iface.values() if isinstance(v, list))
-    print(f"Updated IpcHashes in {yaml_path} ({changed} versioned entries)", file=sys.stderr)
+    print(f"Updated IpcHashes in {toml_path} ({changed} versioned entries)", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -379,12 +388,12 @@ def _update_yaml(results, yaml_path: Path, version: int):
 def main():
     parser = argparse.ArgumentParser(
         description="Extract IPC funcHash constants from steamclient.so and "
-                    "update the IpcHashes section in res/patterns.yaml."
+                    "update the IpcHashes section in res/patterns.toml."
     )
     parser.add_argument("so_path", help="Path to steamclient.so (32-bit ELF)")
     parser.add_argument(
         "--print", action="store_true", dest="print_only",
-        help="Print results to stdout instead of updating patterns.yaml",
+        help="Print results to stdout instead of updating patterns.toml",
     )
     parser.add_argument(
         "--version", type=int, default=None,
@@ -392,8 +401,8 @@ def main():
              "Old hashes that differ from the extraction get max_version set to this value.",
     )
     parser.add_argument(
-        "--yaml", default=None,
-        help="Path to patterns.yaml (default: res/patterns.yaml relative to repo root)",
+        "--toml", default=None,
+        help="Path to patterns.toml (default: res/patterns.toml relative to repo root)",
     )
     args = parser.parse_args()
 
@@ -406,16 +415,16 @@ def main():
         _print_results(results)
     else:
         if args.version is None:
-            print("ERROR: --version is required when updating YAML. "
+            print("ERROR: --version is required when updating TOML. "
                   "Pass the nSteamVersion of the binary (e.g. --version 1781041600).",
                   file=sys.stderr)
             sys.exit(1)
-        if args.yaml:
-            yaml_path = Path(args.yaml)
+        if args.toml:
+            toml_path = Path(args.toml)
         else:
             repo_root = Path(__file__).parent.parent
-            yaml_path = repo_root / "res" / "patterns.yaml"
-        _update_yaml(results, yaml_path, args.version)
+            toml_path = repo_root / "res" / "patterns.toml"
+        _update_toml(results, toml_path, args.version)
 
 
 if __name__ == "__main__":

@@ -3,9 +3,7 @@
 #include "mtvar.hpp"
 #include "log.hpp"
 
-#include "yaml-cpp/exceptions.h"
-#include "yaml-cpp/node/node.h"
-#include "yaml-cpp/yaml.h"
+#include <toml++/toml.hpp>
 
 #include <cstdint>
 #include <cstdio>
@@ -35,13 +33,7 @@ public:
 		//without implementing it ourself anyway
 	};
 
-	enum class ELoadError : uint32_t
-	{
-		None,
-		MissingKey,
-		ParsingException
-	};
-	MTVariable<ELoadError> __loadErrors;
+	bool __parseError = false;
 
 	MTVariable<std::unordered_set<uint32_t>> appIds;
 	MTVariable<std::unordered_set<uint32_t>> addedAppIds;
@@ -53,11 +45,12 @@ public:
 	MTVariable<std::unordered_map<uint32_t, std::string>> gameTitles;
 	MTVariable<std::unordered_map<uint32_t, uint32_t>> subscriptionTimestamps;
 
-	// yaml-origin baselines. reconcileIntoConfig recomputes addedAppIds =
-	// yamlAddedAppIds ∪ lua ownedAppIds (and appTokens likewise) so lua
+	// Config-file-origin baselines. reconcileIntoConfig recomputes addedAppIds =
+	// configAddedAppIds ∪ lua ownedAppIds (and appTokens likewise) so lua
 	// hot-REMOVAL propagates instead of a union-only merge that only adds.
 	// MTVariable because loadSettings (config FileWatcher thread) WRITES these
 	// while reconcileIntoConfig (lua FileWatcher thread) READS them.
+	// NOTE: kept as yamlAddedAppIds/yamlAppTokens for ABI/API compat with callers.
 	MTVariable<std::unordered_set<uint32_t>> yamlAddedAppIds;
 	MTVariable<std::unordered_map<uint32_t, uint64_t>> yamlAppTokens;
 
@@ -105,109 +98,98 @@ public:
 	std::string getDir();
 	std::string getPath();
 	bool createFile();
+	void migrateConfig();
 	bool init();
 	void shutdown();
 
-	void setError(ELoadError err);
 	bool loadSettings();
 
 	template<typename T>
-	T getSetting(YAML::Node& node, const char* name, T defVal)
+	T getSetting(const toml::table& tbl, const char* name, T defVal)
 	{
-		if (!node[name])
+		if constexpr (std::is_same_v<T, bool>)
 		{
-			//g_pLog->notifyLong("Missing %s in configfile! Using default", name);
-			setError(ELoadError::MissingKey);
-			return defVal;
+			auto v = tbl[name].value<bool>();
+			if (!v) { g_pLog->debug("Config: %s not set, using default\n", name); return defVal; }
+			return *v;
 		}
-
-		try
+		else if constexpr (std::is_integral_v<T>)
 		{
-			 return node[name].as<T>();
+			auto v = tbl[name].value<int64_t>();
+			if (!v) { g_pLog->debug("Config: %s not set, using default\n", name); return defVal; }
+			return static_cast<T>(*v);
 		}
-		catch (YAML::BadConversion& er)
+		else
 		{
-			//g_pLog->notify("Failed to parse value of %s! Using default\n", name);
-			setError(ELoadError::ParsingException);
-			return defVal;
+			auto v = tbl[name].value<std::string>();
+			if (!v) { g_pLog->debug("Config: %s not set, using default\n", name); return defVal; }
+			if constexpr (std::is_same_v<T, std::string>) return *v;
+			else return T(*v);
 		}
-	};
+	}
 
 	template<typename T>
-	std::unordered_set<T> getList(YAML::Node& rootNode, const char* name)
+	std::unordered_set<T> getList(const toml::table& tbl, const char* name)
 	{
-		auto list = std::unordered_set<T>();
-
-		const auto node = rootNode[name];
-		if (!node)
+		std::unordered_set<T> list;
+		auto* arr = tbl[name].as_array();
+		if (!arr)
 		{
-			//g_pLog->notifyLong("Missing %s in configfile! Using default", name);
-			setError(ELoadError::MissingKey);
+			g_pLog->debug("Config: %s not set, using default\n", name);
 			return list;
 		}
-
-		for(auto subNode : node)
+		for (const auto& item : *arr)
 		{
-			try
+			if constexpr (std::is_integral_v<T>)
 			{
-				T val = subNode.as<T>();
-				list.emplace(val);
-
-				//TODO: Find better way to log shit
-				if (std::is_same_v<T, uint32_t>)
+				if (auto v = item.value<int64_t>())
 				{
-					g_pLog->info("Added %u to %s\n", val, name);
+					list.emplace(static_cast<T>(*v));
+					if constexpr (std::is_same_v<T, uint32_t>)
+						g_pLog->info("Added %u to %s\n", static_cast<uint32_t>(*v), name);
 				}
+				else { __parseError = true; }
 			}
-			catch(...)
+			else
 			{
-				//g_pLog->notify("Failed to parse %s!", name);
-				setError(ELoadError::ParsingException);
+				if (auto v = item.value<T>())
+					list.emplace(*v);
+				else { __parseError = true; }
 			}
 		}
-
 		return list;
 	}
 
 	template<typename T, typename T2>
-	std::unordered_map<T, T2> getMap(YAML::Node& rootNode, const char* name)
+	std::unordered_map<T, T2> getMap(const toml::table& tbl, const char* name)
 	{
-		auto map = std::unordered_map<T, T2>();
-
-		const auto node = rootNode[name];
-		if (!node)
+		std::unordered_map<T, T2> map;
+		auto* sub = tbl[name].as_table();
+		if (!sub)
 		{
-			//g_pLog->notifyLong("Missing %s in configfile! Using default", name);
-			setError(ELoadError::MissingKey);
+			g_pLog->debug("Config: %s not set, using default\n", name);
 			return map;
 		}
-
-		for(auto& subNode : node)
+		for (const auto& [k, v] : *sub)
 		{
 			try
 			{
-				//TODO: Add error checks for failed parsing since yaml-cpp does not throw
-				auto k = subNode.first.as<T>();
-				auto v = subNode.second.as<T2>();
+				T key;
+				if constexpr (std::is_integral_v<T>)
+					key = static_cast<T>(std::stoul(std::string(k.str())));
+				else
+					key = T(std::string(k.str()));
 
-				map[k] = v;
+				T2 val;
+				if constexpr (std::is_integral_v<T2>)
+					val = static_cast<T2>(v.value_or(int64_t(0)));
+				else
+					val = v.value_or(T2{});
 
-				if (std::is_same_v<T, uint32_t> && std::is_same_v<T, T2>)
-				{
-					g_pLog->info("Added %u to %u in %s\n", k, v, name);
-				}
-				else if (std::is_same_v<T, uint32_t> && std::is_same_v<T2, uint64_t>)
-				{
-					g_pLog->info("Added %u to %llu in %s\n", k, v, name);
-				}
+				map[key] = val;
 			}
-			catch(...)
-			{
-				//g_pLog->notify("Failed to parse %s!", name);
-				setError(ELoadError::ParsingException);
-			}
+			catch (...) { __parseError = true; }
 		}
-
 		return map;
 	}
 
