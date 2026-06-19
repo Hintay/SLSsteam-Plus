@@ -10,7 +10,8 @@
 
 uint32_t* IClientUtils::getPipeIndex()
 {
-	//Offset found in IClientUtils::GetAppId
+	if (Patterns::IClientUtils::Offset_GetPipeIndex.address == LM_ADDRESS_BAD)
+		return nullptr;
 	const static auto offset = *reinterpret_cast<lm_address_t*>(Patterns::IClientUtils::Offset_GetPipeIndex.address + 0x2);
 	return reinterpret_cast<uint32_t*>(this + offset);
 }
@@ -18,6 +19,8 @@ uint32_t* IClientUtils::getPipeIndex()
 
 uint32_t IClientUtils::getAppId()
 {
+	if (!Hooks::IClientUtils_GetAppId.originalFn.address)
+		return 0;
 	return Hooks::IClientUtils_GetAppId.originalFn.fn(this);
 }
 
