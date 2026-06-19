@@ -1,4 +1,4 @@
-﻿using ProtoBuf;
+using ProtoBuf;
 using SteamKit2;
 using SteamKit2.Internal;
 using SteamKit2.Authentication;
@@ -10,7 +10,7 @@ namespace TicketGrabber
         //Stolen from SteamKit2/Steam/Handlers/SteamApps/Callbacks.cs:AppOwnershipTicketCallback
         public EResult Result { get; private set; }
         public uint AppID { get; private set; }
-        public SteamKit2.Internal.EncryptedAppTicket Ticket { get; private set; }
+        public SteamKit2.Internal.EncryptedAppTicket Ticket { get; private set; } = null!;
 
         internal EncryptedAppTicketCallback(IPacketMsg packetMsg)
         {
@@ -29,7 +29,7 @@ namespace TicketGrabber
     {
         public override void HandleMsg(IPacketMsg msg)
         {
-            CallbackMsg callback = null;
+            CallbackMsg? callback = null;
 
             switch (msg.MsgType)
             {
@@ -55,7 +55,7 @@ namespace TicketGrabber
 
         protected string guardDataFile => Path.Combine(GuardDataDir, Username + ".sentry");
 
-        protected string getStoredGuardData()
+        protected string? getStoredGuardData()
         {
             if (!Directory.Exists(GuardDataDir))
             {
@@ -97,7 +97,7 @@ namespace TicketGrabber
             var filePath = Path.Combine(TicketDir, $"{prefix}_{appId}.yaml");
             File.WriteAllLines(filePath,
             [
-                $"steamId: {User.SteamID.AccountID}",
+                $"steamId: {User.SteamID?.AccountID}",
                 $"{prefix}: {b64Ticket}"
             ]);
             Console.WriteLine($"Saved {filePath}");
@@ -121,20 +121,20 @@ namespace TicketGrabber
             Client = new SteamClient();
             callbackManager = new CallbackManager(Client);
 
-            User = Client.GetHandler<SteamUser>();
-            Friends = Client.GetHandler<SteamFriends>();
-            Apps = Client.GetHandler<SteamApps>();
+            var user = Client.GetHandler<SteamUser>();
+            var friends = Client.GetHandler<SteamFriends>();
+            var apps = Client.GetHandler<SteamApps>();
 
-            if
-            (
-                User == null
-                || Friends == null
-                || Apps == null
-            )
+            if (user == null || friends == null || apps == null)
             {
                 Console.WriteLine("Failed to get Handlers!");
                 Environment.Exit(1);
+                return; // unreachable, but satisfies definite-assignment analysis
             }
+
+            User = user;
+            Friends = friends;
+            Apps = apps;
 
             Client.AddHandler(new EncryptedTicketCallbackHandler());
 
