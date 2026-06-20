@@ -4,6 +4,7 @@
 #include "../hooks.hpp"
 #include "../log.hpp"
 #include "../ownership.hpp"
+#include "../patterns.hpp"
 
 #include <cstring>
 #include <mutex>
@@ -19,7 +20,9 @@ void doAcquireSource(void* pClientUser)
 	uint8_t buf[kBufSize];
 	uint32_t piAppId = 0, piSteamId = 0, piSig = 0, pcbSig = 0;
 
-	const uint32_t ret = Hooks::IClientUser_GetAppOwnershipTicketExtendedData.tramp.fn(
+	auto fn = reinterpret_cast<Hooks::IClientUser_GetAppOwnershipTicketExtendedData_t>(
+		Patterns::IClientUser::GetAppOwnershipTicketExtendedData.address);
+	const uint32_t ret = fn(
 		pClientUser, ForgeTicket::kSourceAppId,
 		buf, kBufSize, &piAppId, &piSteamId, &piSig, &pcbSig);
 
