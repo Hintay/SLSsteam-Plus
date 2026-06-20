@@ -32,6 +32,7 @@
 #include "feats/steamui.hpp"
 #include "feats/requestcode.hpp"
 #include "feats/ticket.hpp"
+#include "feats/forge_ticket.hpp"
 
 #include "ownership.hpp"
 
@@ -1472,6 +1473,82 @@ static bool hkClientUser_RequiresLegacyCDKey(void* pClientUser, uint32_t appId, 
 	return requiresKey;
 }
 
+// IPC post-handler: GetAppOwnershipTicketExtendedData
+// Response layout (RE-verified):
+//   0x00: returnValue (u32)
+//   0x04: pTicket (ticketSize bytes)
+//   0x04+ticketSize: piAppId (u32)
+//   0x08+ticketSize: piSteamId (u32)
+//   0x0c+ticketSize: piSignature (u32)
+//   0x10+ticketSize: pcbSignature (u32)
+static void hIpc_User_GetAppOwnershipTicketExtendedData(IpcDispatch::IpcCallCtx& ctx)
+{
+	const uint8_t* pkt = IpcDispatch::requestPtr(ctx.pRead);
+	if (!pkt)
+	{
+		ctx.original(ctx.pInterface, ctx.pRead, ctx.pWrite, ctx.a3);
+		return;
+	}
+
+	const uint32_t appId     = IpcDispatch::readArgU32(pkt, 0);
+	const uint32_t ticketSize = IpcDispatch::readArgU32(pkt, 4);
+
+	if (!Ownership::shouldSpoofOwnership(appId))
+	{
+		ctx.original(ctx.pInterface, ctx.pRead, ctx.pWrite, ctx.a3);
+		Ticket::getTicketOwnershipExtendedData(appId);
+		return;
+	}
+
+	ForgeTicket::acquireSourceTicket(ctx.pInterface);
+
+	ForgeTicket::AppOwnershipTicket ticket{};
+	if (!ForgeTicket::getAppOwnershipTicket(appId, ticket))
+	{
+		ctx.original(ctx.pInterface, ctx.pRead, ctx.pWrite, ctx.a3);
+		return;
+	}
+
+	// Run original to allocate the response buffer
+	ctx.original(ctx.pInterface, ctx.pRead, ctx.pWrite, ctx.a3);
+
+	uint8_t* resp = IpcDispatch::responsePtr(ctx.pWrite);
+	const uint32_t respLen = IpcDispatch::responseLen(ctx.pWrite);
+	const uint32_t needed = 0x14 + ticketSize;
+	if (!resp || respLen < needed)
+	{
+		g_pLog->warn("ForgeTicket: response buffer too small (%u < %u) for appid %u\n",
+			respLen, needed, appId);
+		return;
+	}
+
+	if (ticket.data.size() > ticketSize)
+	{
+		g_pLog->warn("ForgeTicket: ticket too large (%zu > %u) for appid %u\n",
+			ticket.data.size(), ticketSize, appId);
+		return;
+	}
+
+	IpcDispatch::writeU32(resp, 0x00, ticket.totalSize);
+	std::memcpy(resp + 0x04, ticket.data.data(), ticket.data.size());
+	IpcDispatch::writeU32(resp, 0x04 + ticketSize, ticket.appIdOffset);
+	IpcDispatch::writeU32(resp, 0x08 + ticketSize, ticket.steamIdOffset);
+	IpcDispatch::writeU32(resp, 0x0c + ticketSize, ticket.signatureOffset);
+	IpcDispatch::writeU32(resp, 0x10 + ticketSize, ticket.signatureSize);
+
+	// SteamID linkage: extract from ticket data at offset 8 (uint64 LE, low 32 bits)
+	if (ticket.data.size() >= 16)
+	{
+		uint64_t sid64 = 0;
+		std::memcpy(&sid64, ticket.data.data() + ForgeTicket::kAppTicketSteamIdOffset, sizeof(uint64_t));
+		Ticket::oneTimeSteamIdSpoof = static_cast<uint32_t>(sid64 & 0xFFFFFFFFULL);
+	}
+
+	g_pLog->info("ForgeTicket: injected ticket for appid %u (totalSize=%u, forged=%s)\n",
+		appId, ticket.totalSize,
+		ticket.data.size() != ticket.totalSize ? "yes" : "no");
+}
+
 static void hkClientUser_RunIPCFrame(void* pClientUser, void* a1, void* a2, void* a3)
 {
 	IpcDispatch::dispatch(pClientUser, a1, a2, a3,
@@ -1747,7 +1824,13 @@ bool Hooks::setup()
 		&& IClientAppManager_RunIPCFrame.setup(Patterns::IClientAppManager::RunIPCFrame, hkClientAppManager_RunIPCFrame)
 		&& IClientRemoteStorage_RunIPCFrame.setup(Patterns::IClientRemoteStorage::RunIPCFrame, hkClientRemoteStorage_RunIPCFrame)
 		&& IClientUGC_RunIPCFrame.setup(Patterns::IClientUGC::RunIPCFrame, hkClientUGC_RunIPCFrame)
-		&& IClientUtils_RunIPCFrame.setup(Patterns::IClientUtils::RunIPCFrame, hkClientUtils_RunIPCFrame)
+		&& IClientUtils_RunIPCFrame.setup(Patterns::IClientUtils::RunIPCFrame, hkClientUtils_RunIPCFrame);
+
+	IpcDispatch::registerHandler(
+		IpcHash::IClientUser::kGetAppOwnershipTicketExtendedData,
+		hIpc_User_GetAppOwnershipTicketExtendedData);
+
+	succeeded = succeeded
 		&& IClientUser_RunIPCFrame.setup(Patterns::IClientUser::RunIPCFrame, hkClientUser_RunIPCFrame)
 		&& IClientUserStats_RunIPCFrame.setup(Patterns::IClientUserStats::RunIPCFrame, hkClientUserStats_RunIPCFrame)
 
