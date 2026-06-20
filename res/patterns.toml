@@ -125,6 +125,7 @@ candidates = ["83 EC 0C 89 F3 8B 7D ? FF 30 E8 ? ? ? ? 83 C4 10 83 FF 01 77 ? 84
 [Patterns.steamclient."IClientUser::GetAppOwnershipTicketExtendedData"]
 follow = "PrologueUpwards"
 prologue = "53 56 57 55"
+optional = true
 candidates = ["83 EC 24 FF 74 24 ? 8B 44 24"]
 
 [Patterns.steamclient."IClientUser::GetSteamId"]
@@ -233,9 +234,9 @@ IsCloudEnabledForApp = 0x88A72792
 SetCloudEnabledForApp = 0x2EAADA14
 
 [IpcHashes.IClientUser]
+GetAppOwnershipTicketExtendedData = 0xC7E71245
 GetSteamID = 0xD6FC3200
 
 [IpcHashes.IClientUtils]
 GetAppId = 0x09607EC4
 GetOfflineMode = 0xD1D2D9CF
-

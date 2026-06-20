@@ -1,7 +1,6 @@
 #include "forge_ticket.hpp"
 #include "ticket.hpp"
 
-#include "../hooks.hpp"
 #include "../log.hpp"
 #include "../ownership.hpp"
 #include "../patterns.hpp"
@@ -20,8 +19,14 @@ void doAcquireSource(void* pClientUser)
 	uint8_t buf[kBufSize];
 	uint32_t piAppId = 0, piSteamId = 0, piSig = 0, pcbSig = 0;
 
-	auto fn = reinterpret_cast<Hooks::IClientUser_GetAppOwnershipTicketExtendedData_t>(
-		Patterns::IClientUser::GetAppOwnershipTicketExtendedData.address);
+	const auto addr = Patterns::IClientUser::GetAppOwnershipTicketExtendedData.address;
+	if (addr == LM_ADDRESS_BAD)
+	{
+		g_pLog->warn("ForgeTicket: GetAppOwnershipTicketExtendedData pattern unresolved\n");
+		return;
+	}
+	using GetAppOwnershipTicketExtendedData_t = uint32_t(*)(void*, uint32_t, void*, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
+	auto fn = reinterpret_cast<GetAppOwnershipTicketExtendedData_t>(addr);
 	const uint32_t ret = fn(
 		pClientUser, ForgeTicket::kSourceAppId,
 		buf, kBufSize, &piAppId, &piSteamId, &piSig, &pcbSig);
