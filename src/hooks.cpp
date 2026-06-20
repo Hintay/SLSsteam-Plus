@@ -8,6 +8,7 @@
 #include "patterns.hpp"
 #include "ipchash.gen.hpp"
 #include "ipcoutbound.hpp"
+#include "ipcdispatch.hpp"
 
 #include "sdk/CAppOwnershipInfo.hpp"
 #include "sdk/CProtoBufMsgBase.hpp"
@@ -1473,19 +1474,8 @@ static bool hkClientUser_RequiresLegacyCDKey(void* pClientUser, uint32_t appId, 
 
 static void hkClientUser_RunIPCFrame(void* pClientUser, void* a1, void* a2, void* a3)
 {
-	//g_pClientUser = reinterpret_cast<IClientUser*>(pClientUser);
-
-	//std::shared_ptr<lm_vmt_t> vft = std::make_shared<lm_vmt_t>();
-	//LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientUser), vft.get());
-
-	//g_pLog->debug("IClientUser->vft at %p\n", vft->vtable);
-
-	//Hooks::IClientUser_RunIPCFrame.remove();
-	//Hooks::IClientUser_RunIPCFrame.originalFn.fn(pClientUser, a1, a2, a3);
-	
-	//FakeAppIds::pipeLoop(false);
-	Hooks::IClientUser_RunIPCFrame.tramp.fn(pClientUser, a1, a2, a3);
-	//FakeAppIds::pipeLoop(true);
+	IpcDispatch::dispatch(pClientUser, a1, a2, a3,
+		[](void* i, void* x, void* y, void* z){ Hooks::IClientUser_RunIPCFrame.tramp.fn(i, x, y, z); });
 }
 
 static void hkClientUserStats_RunIPCFrame(void* pClientUserStats, void* a1, void* a2, void* a3)
