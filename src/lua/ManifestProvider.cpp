@@ -192,10 +192,13 @@ static bool tryProvider(const Provider& p, uint64_t gid, uint64_t& outCode)
 
     std::string body;
     long        status = 0;
-    static const std::vector<std::pair<std::string, std::string>> noHeaders;
     static const std::string noBody;
 
-    int rc = Curl::request("GET", url.c_str(), noHeaders, noBody, body, status, options);
+    std::vector<std::pair<std::string, std::string>> headers;
+    if (url.find("opensteamtool.com") != std::string::npos)
+        headers.push_back({"User-Agent", "OpenSteamTool/1.0"});
+
+    int rc = Curl::request("GET", url.c_str(), headers, noBody, body, status, options);
 
     g_pLog->info("ManifestProvider: provider='%s' gid=%llu curlrc=%d status=%ld reuse=%i\n",
                  p.name, static_cast<unsigned long long>(gid), rc, status,
