@@ -5,7 +5,6 @@
 #include "../ownership.hpp"
 #include "../patterns.hpp"
 
-#include <cstring>
 #include <mutex>
 
 namespace {

@@ -171,9 +171,7 @@ void Ticket::launchApp(uint32_t appId)
 {
 	auto ticket = getCachedTicket(appId);
 	if (!ticket.ticket.size())
-	{
 		return;
-	}
 
 	g_pSteamEngine->getUser(0)->updateAppOwnershipTicket(appId, reinterpret_cast<void*>(ticket.ticket.data()), ticket.ticket.size());
 	g_pLog->once("Force loaded AppOwnershipTicket for %i\n", appId);
@@ -374,29 +372,19 @@ bool Ticket::onSendFrame(const uint8_t* pubData, uint32_t cubData)
 	);
 
 	if (!spoofedOwnership)
-	{
 		return false;
-	}
 
 	SavedTicket cached = Ticket::getCachedTicket(appId);
 	auto* user = g_pSteamEngine ? g_pSteamEngine->getUser(0) : nullptr;
 	if (user && !cached.ticket.empty())
 	{
 		user->updateAppOwnershipTicket(appId, reinterpret_cast<void*>(cached.ticket.data()), cached.ticket.size());
-		g_pLog->once("Prepared local AppOwnershipTicket for %u before dropping raw request (%zu bytes)\n", appId, cached.ticket.size());
-	}
-	else if (!user)
-	{
-		g_pLog->warn("Dropping raw AppOwnershipTicket request for %u but CUser is unavailable\n", appId);
-	}
-	else
-	{
-		g_pLog->debug("Dropping raw AppOwnershipTicket request for %u without local ticket\n", appId);
+		g_pLog->once("Loaded local AppOwnershipTicket for %u (%zu bytes)\n", appId, cached.ticket.size());
 	}
 
-	// Drop only after Steam has completed CProtoBufMsgBase::Send serialization.
-	// Returning from Send directly corrupts Steam's protobuf send state and can
-	// trigger google::protobuf::FatalException during startup.
+	if (!g_config.blockTicketRequests.get())
+		return false;
+
 	g_pLog->once("Dropped raw AppOwnershipTicket request for fake-owned AppID %u\n", appId);
 	return true;
 }

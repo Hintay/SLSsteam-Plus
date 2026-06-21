@@ -780,6 +780,7 @@ bool CConfig::loadSettings()
 	fakeEmail = getSetting<std::string>(node, "FakeEmail", "");
 	fakeWalletBalance = getSetting<int32_t>(node, "FakeWalletBalance", 0);
 	disableCloud = getSetting<bool>(node, "DisableCloud", true);
+	blockTicketRequests = getSetting<bool>(node, "BlockTicketRequests", true);
 	achievementsSchemaProbeNoConnection = getSetting<bool>(node, "AchievementsSchemaProbeNoConnection", false);
 	extendedLogging = getSetting<bool>(node, "ExtendedLogging", false);
 	logLevel = getSetting<unsigned int>(node, "LogLevel", 2);
@@ -797,6 +798,7 @@ bool CConfig::loadSettings()
 	g_pLog->info("FakeEmail: %s\n", fakeEmail.get().c_str());
 	g_pLog->info("FakeWalletBalance: %i\n", fakeWalletBalance.get());
 	g_pLog->info("DisableCloud: %i\n", disableCloud.get());
+	g_pLog->info("BlockTicketRequests: %i\n", blockTicketRequests.get());
 	g_pLog->info("AchievementsSchemaProbeNoConnection: %i\n", achievementsSchemaProbeNoConnection.get());
 	g_pLog->info("ExtendedLogging: %i\n", extendedLogging.get());
 	g_pLog->info("LogLevel: %i\n", logLevel.get());

@@ -1324,34 +1324,19 @@ static uint32_t hkClientUser_BUpdateOwnershipTicket(void* pClientUser, uint32_t 
 	if (spoofedOwnership)
 	{
 		auto* user = g_pSteamEngine ? g_pSteamEngine->getUser(0) : nullptr;
-		g_pLog->debug
-		(
-			"%s suppressing remote update: appId=%u user=%p localTicketSize=%zu\n",
-
-			Hooks::IClientUser_BUpdateAppOwnershipTicket.name.c_str(),
-			appId,
-			user,
-			cached.ticket.size()
-		);
 
 		if (user && !cached.ticket.empty())
 		{
 			user->updateAppOwnershipTicket(appId, reinterpret_cast<void*>(cached.ticket.data()), cached.ticket.size());
-			g_pLog->once("Suppressed remote AppOwnershipTicket update for %u; loaded local ticket (%zu bytes)\n", appId, cached.ticket.size());
+			g_pLog->once("Loaded local AppOwnershipTicket for %u (%zu bytes)\n", appId, cached.ticket.size());
+		}
+
+		if (g_config.blockTicketRequests.get())
+		{
+			g_pLog->debug("%s: blocked remote update for appId=%u\n",
+				Hooks::IClientUser_BUpdateAppOwnershipTicket.name.c_str(), appId);
 			return 1;
 		}
-
-		if (!user)
-		{
-			g_pLog->warn("Suppressed remote AppOwnershipTicket update for %u but CUser is unavailable\n", appId);
-		}
-		else
-		{
-			g_pLog->debug("Suppressed remote AppOwnershipTicket update for %u without local ticket; not posting synthetic OK callback\n", appId);
-		}
-
-		g_pLog->once("Suppressed remote AppOwnershipTicket update for %u without local ticket\n", appId);
-		return 1;
 	}
 
 	if (Apps::isGenuinelySubscribed(appId) && !cached.steamId)
