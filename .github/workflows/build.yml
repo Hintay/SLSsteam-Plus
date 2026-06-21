@@ -257,7 +257,7 @@ jobs:
           cp artifacts/SLSsteam.so       bundle/bin/
           cp artifacts/library-inject.so bundle/bin/
           cp setup.sh        bundle/
-          cp res/config.yaml bundle/res/
+          cp res/config.toml bundle/res/
           cp -r docs/LICENSE bundle/docs/LICENSE
           install -m755 artifacts/ticket-grabber \
             bundle/tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber
