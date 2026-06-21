@@ -116,6 +116,11 @@ static const NewConfigEntry kNewConfigEntries[] = {
 	  "# injected regardless of this setting.\n"
 	  "#BlockTicketRequests = true\n" },
 
+	{ "StatsEnableApi", "Internal",
+	  "# Automatically query stats.opensteamtool.com for a recommended donor SteamID\n"
+	  "# when no Lua setStat() override exists. Priority: setStat > API > hardcoded default.\n"
+	  "#StatsEnableApi = true\n" },
+
 	{ "Manifest", "Internal",
 	  "# Manifest settings for download functionality.\n"
 	  "# Built-in request-code providers: opensteamtool / wudrm / steamrun.\n"
@@ -880,6 +885,7 @@ bool CConfig::loadSettings()
 	fakeWalletBalance = getSetting<int32_t>(node, "FakeWalletBalance", 0);
 	disableCloud = getSetting<bool>(node, "DisableCloud", true);
 	blockTicketRequests = getSetting<bool>(node, "BlockTicketRequests", true);
+	statsEnableApi = getSetting<bool>(node, "StatsEnableApi", true);
 	achievementsSchemaProbeNoConnection = getSetting<bool>(node, "AchievementsSchemaProbeNoConnection", false);
 	extendedLogging = getSetting<bool>(node, "ExtendedLogging", false);
 	logLevel = getSetting<unsigned int>(node, "LogLevel", 2);
@@ -898,6 +904,7 @@ bool CConfig::loadSettings()
 	g_pLog->info("FakeWalletBalance: %i\n", fakeWalletBalance.get());
 	g_pLog->info("DisableCloud: %i\n", disableCloud.get());
 	g_pLog->info("BlockTicketRequests: %i\n", blockTicketRequests.get());
+	g_pLog->info("StatsEnableApi: %i\n", statsEnableApi.get());
 	g_pLog->info("AchievementsSchemaProbeNoConnection: %i\n", achievementsSchemaProbeNoConnection.get());
 	g_pLog->info("ExtendedLogging: %i\n", extendedLogging.get());
 	g_pLog->info("LogLevel: %i\n", logLevel.get());

@@ -104,6 +104,10 @@ LogLevel = 2
 # licenses without a restart.
 #PackageInjection = true
 
+# Automatically query stats.opensteamtool.com for a recommended donor SteamID
+# when no Lua setStat() override exists. Priority: setStat > API > hardcoded default.
+#StatsEnableApi = true
+
 # For Player.GetUserStats schema probes with sha_schema: set to true to drop
 # those probes for fake-owned apps and inject a fabricated no-connection response.
 #AchievementsSchemaProbeNoConnection = false

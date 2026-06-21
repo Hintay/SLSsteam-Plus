@@ -67,6 +67,7 @@ public:
 	MTVariable<bool> api;
 	MTVariable<bool> disableCloud;
 	MTVariable<bool> blockTicketRequests;
+	MTVariable<bool> statsEnableApi;
 	MTVariable<bool> achievementsSchemaProbeNoConnection;
 	MTVariable<std::string> fakeEmail;
 	MTVariable<int32_t> fakeWalletBalance;

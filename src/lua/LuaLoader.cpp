@@ -2,6 +2,7 @@
 
 #include "../config.hpp"
 #include "../curl.hpp"
+#include "../feats/stats_client.hpp"
 #include "../globals.hpp"
 #include "../log.hpp"
 #include "ManifestProvider.hpp"
@@ -1030,10 +1031,15 @@ namespace LuaLoader {
     static constexpr uint64_t kDefaultStatSteamId = 76561198028121353ULL;
 
     uint64_t getStatSteamId(uint32_t appId) {
-        std::lock_guard<std::mutex> lock(g_luaMtx);
-        auto it = statSteamIds.find(appId);
-        if (it == statSteamIds.end()) return kDefaultStatSteamId;
-        return it->second;
+        {
+            std::lock_guard<std::mutex> lock(g_luaMtx);
+            auto it = statSteamIds.find(appId);
+            if (it != statSteamIds.end()) return it->second;
+        }
+        uint64_t apiSteamId = 0;
+        if (StatsClient::fetchStatSteamId(appId, &apiSteamId))
+            return apiSteamId;
+        return kDefaultStatSteamId;
     }
 
     // ── fetchManifestCode ─────────────────────────────────────────────────
