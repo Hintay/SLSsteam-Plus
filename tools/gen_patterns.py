@@ -25,14 +25,31 @@ def split_name(key):
     segs = key.split("::")
     return segs[:-1], segs[-1]
 
-def first_hash(val):
-    """Extract the first (baked) hash value from a TOML entry.
-    Supports: scalar (0x1234), list of scalars [0x1234, 0x5678],
-    list of maps [{hash = 0x1234}, {hash = 0x5678, max_version = ...}]."""
-    if isinstance(val, list):
-        item = val[0]
-        return item["hash"] if isinstance(item, dict) else item
-    return val
+def bake_pattern(pat):
+    """Extract the baked (latest) pattern string.
+    pat is a string (simple) or a dict/table (versioned: 'current' + version keys)."""
+    if isinstance(pat, str):
+        if not pat:
+            raise ValueError("pattern must not be empty")
+        return pat
+    if isinstance(pat, dict):
+        if "current" not in pat:
+            raise ValueError("versioned pattern table must have a 'current' key")
+        if not pat["current"]:
+            raise ValueError("pattern 'current' must not be empty")
+        return pat["current"]
+    raise ValueError(f"pattern must be a string or table, got {type(pat).__name__}")
+
+def bake_hash(val):
+    """Extract the baked (latest) hash value.
+    val is a scalar int (simple) or a dict/table (versioned: 'current' + version keys)."""
+    if isinstance(val, int):
+        return val
+    if isinstance(val, dict):
+        if "current" in val:
+            return val["current"]
+        raise ValueError("versioned hash table must have a 'current' key")
+    raise ValueError(f"hash must be an integer or table, got {type(val).__name__}")
 
 def emit_ipchash(ipc_hashes):
     lines = ['#pragma once', '#include <cstdint>', '', 'namespace IpcHash {']
@@ -40,7 +57,7 @@ def emit_ipchash(ipc_hashes):
     for iface, methods in (ipc_hashes or {}).items():
         lines.append(f"namespace {iface} {{")
         for method, val in methods.items():
-            h = first_hash(val)
+            h = bake_hash(val)
             lines.append(f"    static constexpr uint32_t k{method} = {h:#010x};")
             lines.append(f'    static constexpr const char* k{method}_Name = "{iface}::{method}";')
             all_hashes.append(f"{h:#010x}")
@@ -65,14 +82,14 @@ def emit(patterns, raw_bytes):
             closer = " }" * len(ns)
             hpp.append(f"{opener}extern Pattern_t {sym};{closer}")
 
+            sig = bake_pattern(spec["pattern"])
             follow = spec.get("follow", "None")
             prologue = bytes_vec(spec.get("prologue", ""))
             optional = "true" if spec.get("optional", False) else "false"
-            cands = ",\n        ".join(json.dumps(c) for c in spec["candidates"])
             name_str = spec.get("name", key)
             cpp.append(f"{opener}Pattern_t {sym} {{")
             cpp.append(f'    {json.dumps(name_str)},')
-            cpp.append(f"    {{ {cands} }},")
+            cpp.append(f"    {json.dumps(sig)},")
             cpp.append(f"    MemHlp::SigFollowMode::{follow},")
             cpp.append(f"    {prologue},")
             cpp.append(f"    {modptr},")
@@ -105,8 +122,9 @@ def main():
             if not isinstance(fns, dict):
                 raise ValueError(f"{module}: function list must be a mapping")
             for key, spec in fns.items():
-                if not spec.get("candidates"):
-                    raise ValueError(f"{module}.{key}: empty candidates")
+                if "pattern" not in spec:
+                    raise ValueError(f"{module}.{key}: missing 'pattern' field")
+                bake_pattern(spec["pattern"])
         hpp, cpp = emit(patterns, raw)
         ipch = emit_ipchash(ipc_hashes)
     except Exception as e:

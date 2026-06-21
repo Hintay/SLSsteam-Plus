@@ -14,10 +14,10 @@ std::vector<Pattern_t*>& Patterns::registry()
 	return patterns;
 }
 
-Pattern_t::Pattern_t(const char* name, std::vector<std::string> candidates,
+Pattern_t::Pattern_t(const char* name, std::string pattern,
                      MemHlp::SigFollowMode followMode, std::vector<uint8_t> prologue,
                      lm_module_t* module, bool optional)
-	: name(name), candidates(std::move(candidates)), followMode(followMode),
+	: name(name), pattern(std::move(pattern)), followMode(followMode),
 	  prologue(std::move(prologue)), optional(optional), module(module),
 	  address(LM_ADDRESS_BAD)
 {
@@ -26,25 +26,23 @@ Pattern_t::Pattern_t(const char* name, std::vector<std::string> candidates,
 
 bool Pattern_t::find()
 {
-	return findWith(candidates, followMode, prologue);
+	return findWith(pattern, followMode, prologue);
 }
 
-bool Pattern_t::findWith(const std::vector<std::string>& cands,
-                         MemHlp::SigFollowMode mode, std::vector<uint8_t> prologueBytes)
+bool Pattern_t::findWith(const std::string& sig,
+                         MemHlp::SigFollowMode mode, const std::vector<uint8_t>& prologueBytes)
 {
 	lm_module_t& mod = module ? *module : g_modSteamClient;
-	for (const auto& sig : cands)
-	{
-		address = MemHlp::searchSignature(
-			name.c_str(), sig.c_str(), mod, mode, prologueBytes.data(), prologueBytes.size());
-		if (address == LM_ADDRESS_BAD)
-			continue;
-		if (address >= mod.base && address < mod.base + mod.size)
-			return true;
-		g_pLog->warn("Patterns: %s resolved %p outside module, rejecting\n",
-			name.c_str(), reinterpret_cast<void*>(address));
-		address = LM_ADDRESS_BAD;
-	}
+	address = MemHlp::searchSignature(
+		name.c_str(), sig.c_str(), mod, mode,
+		const_cast<uint8_t*>(prologueBytes.data()), prologueBytes.size());
+	if (address == LM_ADDRESS_BAD)
+		return false;
+	if (address >= mod.base && address < mod.base + mod.size)
+		return true;
+	g_pLog->warn("Patterns: %s resolved %p outside module, rejecting\n",
+		name.c_str(), reinterpret_cast<void*>(address));
+	address = LM_ADDRESS_BAD;
 	return false;
 }
 
@@ -97,11 +95,11 @@ bool Patterns::init()
 						bool recovered = false;
 						const OnlinePatterns::Entry* tried = pickByVersion(entries, ver);
 						if (tried)
-							recovered = p->findWith(tried->candidates, tried->follow, tried->prologue);
+							recovered = p->findWith(tried->pattern, tried->follow, tried->prologue);
 
 						if (!recovered)
 							for (const auto& e : entries)
-								if (&e != tried && (recovered = p->findWith(e.candidates, e.follow, e.prologue)))
+								if (&e != tried && (recovered = p->findWith(e.pattern, e.follow, e.prologue)))
 									break;
 
 						if (recovered)

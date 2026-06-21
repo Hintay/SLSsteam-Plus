@@ -10,7 +10,7 @@ struct Pattern_t
 {
 public:
 	const std::string name;
-	const std::vector<std::string> candidates;   // tried in order; first that resolves wins
+	const std::string pattern;
 	const MemHlp::SigFollowMode followMode;
 	std::vector<uint8_t> prologue;
 	const bool optional;
@@ -18,15 +18,15 @@ public:
 	lm_module_t* module;
 	lm_address_t address;
 
-	Pattern_t(const char* name, std::vector<std::string> candidates,
+	Pattern_t(const char* name, std::string pattern,
 	          MemHlp::SigFollowMode followMode, std::vector<uint8_t> prologue = {},
 	          lm_module_t* module = nullptr, bool optional = false);
 
 	bool find();
 
-	// Retry resolution using online-provided candidates/follow/prologue (phase 2).
-	bool findWith(const std::vector<std::string>& cands,
-	              MemHlp::SigFollowMode mode, std::vector<uint8_t> prologueBytes);
+	// Retry resolution using an online-provided pattern/follow/prologue (phase 2).
+	bool findWith(const std::string& sig,
+	              MemHlp::SigFollowMode mode, const std::vector<uint8_t>& prologueBytes);
 };
 
 namespace Patterns

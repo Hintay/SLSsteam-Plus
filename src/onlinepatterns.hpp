@@ -12,7 +12,7 @@ namespace OnlinePatterns
 {
 	struct Entry
 	{
-		std::vector<std::string> candidates;
+		std::string pattern;
 		MemHlp::SigFollowMode follow = MemHlp::SigFollowMode::None;
 		std::vector<uint8_t> prologue;
 		uint32_t maxVersion = 0;       // 0 = latest (no upper bound)

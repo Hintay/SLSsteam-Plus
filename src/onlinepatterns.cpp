@@ -30,18 +30,68 @@ namespace
 		return out;
 	}
 
-	OnlinePatterns::Entry parsePatternSpec(const toml::table& spec)
+	// Parse a version key: "current" → 0 (latest), numeric string → that version.
+	// Returns false for unrecognisable keys (caller should skip).
+	bool parseVersionKey(const std::string& key, uint32_t& outVersion)
 	{
-		OnlinePatterns::Entry e;
-		e.follow = parseFollow(spec["follow"].value_or(std::string("None")));
+		if (key == "current") { outVersion = 0; return true; }
+		try { outVersion = static_cast<uint32_t>(std::stoul(key)); return true; }
+		catch (...) { return false; }
+	}
+
+	// Parse a pattern spec table. The "pattern" field is either a plain string
+	// (single entry, maxVersion=0) or a sub-table with "current" + version keys.
+	// Shared fields (follow, prologue) are read from the parent spec table.
+	void parsePatternSpec(const toml::table& spec, const std::string& key,
+	                      std::map<std::string, std::vector<OnlinePatterns::Entry>>& byName)
+	{
+		const auto follow = parseFollow(spec["follow"].value_or(std::string("None")));
+		std::vector<uint8_t> prologue;
 		if (auto p = spec["prologue"].value<std::string>())
-			e.prologue = parsePrologue(*p);
-		e.maxVersion = static_cast<uint32_t>(spec["max_version"].value_or(int64_t(0)));
-		if (auto* cands = spec["candidates"].as_array())
-			for (const auto& c : *cands)
-				if (auto s = c.value<std::string>())
-					e.candidates.push_back(*s);
-		return e;
+			prologue = parsePrologue(*p);
+
+		std::string effName = key;
+		if (auto n = spec["name"].value<std::string>())
+			effName = *n;
+
+		auto& vec = byName[effName];
+
+		if (auto s = spec["pattern"].value<std::string>())
+		{
+			vec.push_back({ *s, follow, prologue, 0 });
+		}
+		else if (auto* tbl = spec["pattern"].as_table())
+		{
+			for (const auto& [vk, vv] : *tbl)
+			{
+				auto sig = vv.value<std::string>();
+				if (!sig) continue;
+				uint32_t maxVer;
+				if (!parseVersionKey(std::string(vk.str()), maxVer)) continue;
+				vec.push_back({ *sig, follow, prologue, maxVer });
+			}
+		}
+	}
+
+	// Parse an IpcHash value. Scalar int → single hash (maxVersion=0).
+	// Table with "current" + version keys → versioned hashes.
+	void parseIpcHashValue(const toml::node& val, std::vector<VersionedHash>& vec)
+	{
+		if (auto v = val.value<int64_t>())
+		{
+			vec.push_back({ static_cast<uint32_t>(*v), 0 });
+		}
+		else if (auto* tbl = val.as_table())
+		{
+			for (const auto& [vk, vv] : *tbl)
+			{
+				auto h = vv.value<int64_t>();
+				if (!h) continue;
+				uint32_t maxVer;
+				if (!parseVersionKey(std::string(vk.str()), maxVer)) continue;
+				vec.push_back({ static_cast<uint32_t>(*h), maxVer });
+			}
+		}
 	}
 }
 
@@ -80,27 +130,8 @@ OnlinePatterns::Overrides OnlinePatterns::fetchAndParse()
 				for (const auto& [fnKey, fnVal] : *mod)
 				{
 					const std::string key(fnKey.str());
-					if (auto* arr = fnVal.as_array())
-					{
-						// Array of specs — effective name comes from first element's "name" field
-						std::string effName = key;
-						if (!arr->empty())
-							if (auto* first = arr->front().as_table())
-								if (auto n = (*first)["name"].value<std::string>())
-									effName = *n;
-						auto& vec = ov.byName[effName];
-						for (const auto& item : *arr)
-							if (auto* t = item.as_table())
-								vec.push_back(parsePatternSpec(*t));
-					}
-					else if (auto* tbl = fnVal.as_table())
-					{
-						// Single spec table
-						std::string effName = key;
-						if (auto n = (*tbl)["name"].value<std::string>())
-							effName = *n;
-						ov.byName[effName].push_back(parsePatternSpec(*tbl));
-					}
+					if (auto* tbl = fnVal.as_table())
+						parsePatternSpec(*tbl, key, ov.byName);
 				}
 			}
 		}
@@ -115,28 +146,7 @@ OnlinePatterns::Overrides OnlinePatterns::fetchAndParse()
 				for (const auto& [mKey, mVal] : *methods)
 				{
 					const std::string fullKey = ifaceName + "::" + std::string(mKey.str());
-					auto& vec = ov.ipcHashes[fullKey];
-					if (auto* arr = mVal.as_array())
-					{
-						for (const auto& item : *arr)
-						{
-							VersionedHash hc;
-							if (auto* t = item.as_table())
-							{
-								hc.hash = static_cast<uint32_t>((*t)["hash"].value_or(int64_t(0)));
-								hc.maxVersion = static_cast<uint32_t>((*t)["max_version"].value_or(int64_t(0)));
-							}
-							else
-							{
-								hc.hash = static_cast<uint32_t>(item.value_or(int64_t(0)));
-							}
-							vec.push_back(hc);
-						}
-					}
-					else
-					{
-						vec.push_back({ static_cast<uint32_t>(mVal.value_or(int64_t(0))), 0 });
-					}
+					parseIpcHashValue(mVal, ov.ipcHashes[fullKey]);
 				}
 			}
 		}
