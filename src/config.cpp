@@ -7,6 +7,7 @@
 #include "lua/LuaLoader.hpp"
 #include "lua/ManifestProvider.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -75,31 +76,47 @@ bool CConfig::createFile()
 
 // ============================================================================
 // TOML config entries that may be absent in configs created before they were
-// introduced. Each entry's block is appended verbatim when the key is not
-// found in the user's TOML file (active or commented). Blocks whose key line
-// starts with '#' serve as reference-only documentation the user can uncomment.
+// introduced. Each entry carries a category label that maps to the section
+// headers in config_default.hpp (e.g. "# --- Core ---"). When a key is
+// missing, the entry is inserted at the end of its category section rather
+// than dumped at the bottom of the file.
 // ============================================================================
-static const struct { const char* key; const char* block; } kNewConfigEntries[] = {
-	{ "OnlinePatterns",
+
+struct NewConfigEntry {
+	const char* key;
+	const char* category;
+	const char* block;
+};
+
+static const NewConfigEntry kNewConfigEntries[] = {
+	// --- Core ---
+	{ "DisableCloud", "Core",
+	  "# Disable cloud saves for unlocked games. Set to false if using CloudRedirect or similar.\n"
+	  "DisableCloud = true\n" },
+
+	// --- Internal ---
+	{ "OnlinePatterns", "Internal",
 	  "# Fetch the latest patterns online (HTTPS) on startup to pick up updated\n"
 	  "# signatures and IpcHashes for new Steam builds without re-downloading SLSsteam.\n"
 	  "#OnlinePatterns = true\n" },
 
-	{ "DisableCloud",
-	  "# Disable cloud saves for unlocked games. Set to false if using CloudRedirect or similar.\n"
-	  "DisableCloud = true\n" },
-
-	{ "AchievementsSchemaProbeNoConnection",
+	{ "AchievementsSchemaProbeNoConnection", "Internal",
 	  "# For Player.GetUserStats schema probes with sha_schema: set to true to drop\n"
 	  "# those probes for fake-owned apps and inject a fabricated no-connection response.\n"
 	  "#AchievementsSchemaProbeNoConnection = false\n" },
 
-	{ "PackageInjection",
+	{ "PackageInjection", "Internal",
 	  "# Inject added apps into Steam's live package table (pkg0) and re-evaluate\n"
 	  "# licenses without a restart.\n"
 	  "#PackageInjection = true\n" },
 
-	{ "Manifest",
+	{ "BlockTicketRequests", "Internal",
+	  "# Drop outbound ownership-ticket network requests and suppress remote\n"
+	  "# BUpdateAppOwnershipTicket for spoofed apps. Cached tickets are always\n"
+	  "# injected regardless of this setting.\n"
+	  "#BlockTicketRequests = true\n" },
+
+	{ "Manifest", "Internal",
 	  "# Manifest settings for download functionality.\n"
 	  "# Built-in request-code providers: opensteamtool / wudrm / steamrun.\n"
 	  "# Providers is the ordered fallback chain.\n"
@@ -110,7 +127,7 @@ static const struct { const char* key; const char* block; } kNewConfigEntries[] 
 	  "#TimeoutTotalMs = 10000\n"
 	  "#ReuseConnection = true\n" },
 
-	{ "Lua",
+	{ "Lua", "Internal",
 	  "# Additional Lua plugin directories scanned after the built-in Steam and user config dirs.\n"
 	  "#[Lua]\n"
 	  "#Paths = []\n" },
@@ -148,6 +165,33 @@ static bool configHasKey(const std::string& content, const char* key)
 		pos = (lineEnd == std::string::npos) ? content.size() : lineEnd + 1;
 	}
 	return false;
+}
+
+// Full header lines for each category label. Used when creating a category
+// section that doesn't exist yet (e.g. YAML-converted configs).
+static const struct { const char* label; const char* header; } kCategoryHeaders[] = {
+	{ "Core",     "# --- Core ---" },
+	{ "Optional", "# --- Optional (uncomment to customize) ---" },
+	{ "Advanced", "# --- Advanced ---" },
+	{ "Internal", "# --- Internal (default values are optimal for most users) ---" },
+};
+
+// Find the insertion point for new entries in a category section.
+// Searches for "# --- {category}" prefix and returns the position just before
+// the next category header (or EOF). Returns npos if the category is absent.
+static size_t findCategoryInsertPos(const std::string& content, const char* category)
+{
+	const std::string prefix = std::string("# --- ") + category;
+	const size_t headerPos = content.find(prefix);
+	if (headerPos == std::string::npos)
+		return std::string::npos;
+
+	const size_t afterHeader = content.find('\n', headerPos);
+	if (afterHeader == std::string::npos)
+		return content.size();
+
+	const size_t nextHeader = content.find("\n# --- ", afterHeader);
+	return (nextHeader != std::string::npos) ? nextHeader : content.size();
 }
 
 // ============================================================================
@@ -617,6 +661,13 @@ static std::string convertYamlToToml(const std::string& yamlText)
 	// Remove trailing newline to match Python output (join vs concat)
 	if (!out.empty() && out.back() == '\n') out.pop_back();
 
+	// Collapse triple+ blank lines (converter artifacts from comment buffering)
+	{
+		size_t pos;
+		while ((pos = out.find("\n\n\n")) != std::string::npos)
+			out.erase(pos, 1);
+	}
+
 	return out;
 }
 
@@ -665,7 +716,7 @@ void CConfig::migrateConfig()
 		g_pLog->info("Config: migrated YAML → TOML (%s)\n", tomlPath.c_str());
 	}
 
-	// Phase 2: Append missing TOML entries to an existing config.toml
+	// Phase 2: Insert missing TOML entries into their category sections
 	if (!std::filesystem::exists(tomlPath))
 		return;
 
@@ -676,21 +727,69 @@ void CConfig::migrateConfig()
 		content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 	}
 
-	std::string toAppend;
+	// Group missing entries by category, preserving definition order
+	struct CatGroup { std::string category; std::string entries; };
+	std::vector<CatGroup> groups;
+
 	for (const auto& entry : kNewConfigEntries)
 	{
 		if (configHasKey(content, entry.key))
 			continue;
-		toAppend += '\n';
-		toAppend += entry.block;
+
+		CatGroup* grp = nullptr;
+		for (auto& g : groups)
+			if (g.category == entry.category) { grp = &g; break; }
+		if (!grp)
+		{
+			groups.push_back({entry.category, ""});
+			grp = &groups.back();
+		}
+		grp->entries += '\n';
+		grp->entries += entry.block;
 	}
 
-	if (toAppend.empty())
+	if (groups.empty())
 		return;
 
-	std::ofstream out(tomlPath, std::ios::app);
+	// Collect insertions: entries whose category header exists in the file
+	// are inserted at the end of that section; others are appended at EOF
+	// with a new category header.
+	struct Insertion { size_t pos; std::string text; };
+	std::vector<Insertion> insertions;
+	std::string appendix;
+
+	for (const auto& grp : groups)
+	{
+		const size_t pos = findCategoryInsertPos(content, grp.category.c_str());
+		if (pos != std::string::npos)
+		{
+			insertions.push_back({pos, grp.entries});
+		}
+		else
+		{
+			// Look up full header text for this category label
+			const char* header = nullptr;
+			for (const auto& cat : kCategoryHeaders)
+				if (grp.category == cat.label) { header = cat.header; break; }
+
+			appendix += "\n\n";
+			appendix += header ? header : (std::string("# --- ") + grp.category + " ---").c_str();
+			appendix += grp.entries;
+		}
+	}
+
+	// Process insertions in reverse file order to avoid position shifts
+	std::sort(insertions.begin(), insertions.end(),
+		[](const Insertion& a, const Insertion& b){ return a.pos > b.pos; });
+
+	for (const auto& ins : insertions)
+		content.insert(ins.pos, ins.text);
+
+	content += appendix;
+
+	std::ofstream out(tomlPath, std::ios::trunc);
 	if (!out) return;
-	out << "\n# --- New options (SLSsteam update) ---" << toAppend;
+	out << content;
 	out.flush();
 
 	g_pLog->info("Config: migrated %s — appended new entries\n", tomlPath.c_str());

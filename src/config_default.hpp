@@ -108,6 +108,11 @@ LogLevel = 2
 # those probes for fake-owned apps and inject a fabricated no-connection response.
 #AchievementsSchemaProbeNoConnection = false
 
+# Drop outbound ownership-ticket network requests and suppress remote
+# BUpdateAppOwnershipTicket for spoofed apps. Cached tickets are always
+# injected regardless of this setting.
+#BlockTicketRequests = true
+
 # Manifest settings for download functionality.
 # Built-in request-code providers: opensteamtool / wudrm / steamrun.
 # Providers is the ordered fallback chain.

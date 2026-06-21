@@ -143,7 +143,7 @@ public:
 		{
 			if constexpr (std::is_integral_v<T>)
 			{
-				if (auto v = item.value<int64_t>())
+				if (auto v = item.template value<int64_t>())
 				{
 					list.emplace(static_cast<T>(*v));
 					if constexpr (std::is_same_v<T, uint32_t>)
@@ -153,7 +153,7 @@ public:
 			}
 			else
 			{
-				if (auto v = item.value<T>())
+				if (auto v = item.template value<T>())
 					list.emplace(*v);
 				else { __parseError = true; }
 			}
