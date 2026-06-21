@@ -47,9 +47,9 @@ pattern = "E8 ? ? ? ? 83 C4 10 8D 83 ? ? ? ? 83 EC 0C 89 AB"
 follow = "Relative"
 pattern = "E8 ? ? ? ? E9 ? ? ? ? ? ? ? ? ? 8B 85 ? ? ? ? 83 EC 08 FF B5"
 
+# Offset to CSteamEngine::m_pUser
 [Patterns.steamclient."CSteamEngine::Offset_User"]
 follow = "None"
-name = "CSteamEngine::m_pUser"
 pattern = "8B 80 ? ? ? ? FF 75 ? 8D 34"
 
 [Patterns.steamclient."CSteamMatchmakingServers::GetServerDetails"]
@@ -70,14 +70,14 @@ pattern = "E8 ? ? ? ? 88 45 ? 83 C4 10 84 C0 0F 84 ? ? ? ? 8B 45 ? 80 7D ? 00"
 follow = "Relative"
 pattern = "E8 ? ? ? ? 89 C6 83 C4 10 85 C0 0F 84 ? ? ? ? 8B 9D ? ? ? ? 39 D8"
 
+# Resolves to CSteamEngine::PostCallback
 [Patterns.steamclient."CUser::PostCallback"]
 follow = "Relative"
-name = "CSteamEngine::PostCallback"
 pattern = "E8 ? ? ? ? 8D 86 ? ? ? ? 83 C4 18 68 F6 01 00 00"
 
+# Resolves to IClientUser::UpdateAppOwnershipTicket
 [Patterns.steamclient."CUser::UpdateAppOwnershipTicket"]
 follow = "Relative"
-name = "IClientUser::UpdateAppOwnershipTicket"
 pattern = "E8 ? ? ? ? E9 ? ? ? ? ? ? ? ? ? ? 8D 45 ? 89 45 ? EB"
 
 [Patterns.steamclient."CUser::MarkLicenseAsChanged"]
@@ -130,7 +130,6 @@ pattern = "83 EC 24 FF 74 24 ? 8B 44 24"
 
 [Patterns.steamclient."IClientUser::GetSteamId"]
 follow = "Relative"
-name = "IClientUser::GetSteamID"
 pattern = "E8 ? ? ? ? 89 D8 83 C4 0C 83 C4 08 5B C2 04 00 ? 83 EC 08 50 53 FF D2 89 D8 83 C4 0C 83 C4 08 5B C2 04 00"
 
 [Patterns.steamclient."IClientUser::IsUserSubscribedAppInTicket"]
@@ -157,19 +156,19 @@ follow = "PrologueUpwards"
 prologue = "56 57 E5 89 55"
 pattern = "83 EC 08 89 F3 50 57 E8 ? ? ? ? 58 FF B5 ? ? ? ? E8 ? ? ? ? 58 8D 45"
 
+# Offset to IClientUtils::m_PipeIndex
 [Patterns.steamclient."IClientUtils::Offset_GetPipeIndex"]
 follow = "None"
-name = "IClientUtils::m_PipeIndex"
 pattern = "8B 91 ? ? ? ? 83 F8 FF 74 ? 8B 89 ? ? ? ? EB ? ? ? ? 8B 00 83 F8 FF 74 ? 8D 04 ? 8D 04 ? 3B 50"
 
 [Patterns.steamclient."CPackageInfo::GetPackageInfo"]
 follow = "None"
 pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C 8B 55 14 8B 75 0C 89 45 CC 8B 45 10 89 55 DC 89 45 D8 8B 45 08"
 
+# CConfigStore::FlushToDisk sharedconfig write callsite
 [Patterns.steamclient."CConfigStore::SharedConfigWriteCallsite"]
 follow = "None"
 optional = true
-name = "CConfigStore::FlushToDisk sharedconfig write callsite"
 pattern = "8B 85 50 EF FF FF 83 C4 28 8B 80 50 3B 00 00 FF B5 9C EF FF FF FF B5 8C EF FF FF 53 6A 00 6A 07 FF B5 D4 EE FF FF FF 10 83 C4 20 83 F8 01"
 
 [Patterns.steamclient."CConfigStore::WriteVdfFile"]
@@ -180,12 +179,11 @@ pattern = "55 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 81 EC EC 00 00 00 65 8B 0D 14 00
 [Patterns.steamclient."IClientRemoteStorage::SetCloudEnabledForApp"]
 follow = "None"
 optional = true
-name = "IClientRemoteStorage::SetCloudEnabledForApp (idx25 identity check)"
 pattern = "55 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 81 EC 2C 01 00 00 8B 84 24 48 01 00 00 8B B4 24 44 01 00 00 8B AC 24 40 01 00 00"
 
+# CUtlMemory<uint32>::Grow
 [Patterns.steamclient."CUtlMemory::Grow"]
 follow = "Relative"
-name = "CUtlMemory<uint32>::Grow"
 pattern = "E8 ? ? ? ? 8B 85 04 FF FF FF 83 C4 10 8B 40 54 89 85 FC FE FF FF"
 
 [Patterns.steamclient."CWebSocketConnection::BBuildAndAsyncSendFrame"]

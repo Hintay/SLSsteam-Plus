@@ -86,9 +86,8 @@ def emit(patterns, raw_bytes):
             follow = spec.get("follow", "None")
             prologue = bytes_vec(spec.get("prologue", ""))
             optional = "true" if spec.get("optional", False) else "false"
-            name_str = spec.get("name", key)
             cpp.append(f"{opener}Pattern_t {sym} {{")
-            cpp.append(f'    {json.dumps(name_str)},')
+            cpp.append(f'    {json.dumps(key)},')
             cpp.append(f"    {json.dumps(sig)},")
             cpp.append(f"    MemHlp::SigFollowMode::{follow},")
             cpp.append(f"    {prologue},")

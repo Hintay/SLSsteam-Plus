@@ -50,11 +50,7 @@ namespace
 		if (auto p = spec["prologue"].value<std::string>())
 			prologue = parsePrologue(*p);
 
-		std::string effName = key;
-		if (auto n = spec["name"].value<std::string>())
-			effName = *n;
-
-		auto& vec = byName[effName];
+		auto& vec = byName[key];
 
 		if (auto s = spec["pattern"].value<std::string>())
 		{
