@@ -24,6 +24,12 @@ public:
 		std::string title;
 	};
 
+	struct ProtonInjectEntry
+	{
+		std::string path;
+		std::unordered_set<uint32_t> apps;
+	};
+
 	class CDlcData
 	{
 	public:
@@ -90,6 +96,13 @@ public:
 	// Lua.Paths: optional list of extra directories to scan for .lua plugin files.
 	// These are scanned after the built-in steam-root and user-config dirs.
 	MTVariable<std::vector<std::string>> luaPaths;
+
+	struct ProtonInjectConfig
+	{
+		std::string dir;
+		std::vector<ProtonInjectEntry> dlls;
+	};
+	MTVariable<ProtonInjectConfig> protonInject;
 
 	//Using incomplete class to avoid runtime linking errors
 	CFileWatcher* watcher;

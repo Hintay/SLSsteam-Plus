@@ -293,6 +293,13 @@ bin/library-inject.so: tools/library-inject/main.cpp tools/library-inject/build.
 	@mkdir -p bin
 	cp tools/library-inject/library-inject.so bin/library-inject.so
 
+# Proton DLL injection helpers (LD_PRELOAD into Wine).
+# 64-bit: must be built OUTSIDE the 32-bit nix-shell (use system gcc).
+# 32-bit: built inside nix-shell alongside SLSsteam.so.
+bin/sls_proton_inject32.so: tools/proton_inject/inject.c
+	@mkdir -p bin
+	$(CC) -m32 -shared -fPIC -O2 -Wall -Wextra -o $@ $< -ldl
+
 tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber:
 	sh tools/ticket-grabber/build.sh
 

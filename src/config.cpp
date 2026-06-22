@@ -1083,6 +1083,34 @@ bool CConfig::loadSettings()
 		}
 	}
 
+	// [ProtonInject] — Dir (optional string) + [[ProtonInject.Dlls]] array of tables.
+	{
+		ProtonInjectConfig cfg;
+		if (auto* pi = node["ProtonInject"].as_table()) {
+			cfg.dir = (*pi)["Dir"].value_or(std::string(""));
+			if (auto* arr = (*pi)["Dlls"].as_array()) {
+				for (const auto& item : *arr) {
+					auto* tbl = item.as_table();
+					if (!tbl) continue;
+					ProtonInjectEntry entry;
+					entry.path = (*tbl)["Path"].value_or(std::string(""));
+					if (auto* apps = (*tbl)["Apps"].as_array()) {
+						for (const auto& a : *apps) {
+							if (auto v = a.value<int64_t>())
+								entry.apps.emplace(static_cast<uint32_t>(*v));
+						}
+					}
+					if (!entry.path.empty() && !entry.apps.empty()) {
+						g_pLog->info("ProtonInject: %s -> %zu app(s)\n",
+							entry.path.c_str(), entry.apps.size());
+						cfg.dlls.push_back(std::move(entry));
+					}
+				}
+			}
+		}
+		protonInject = std::move(cfg);
+	}
+
 	if (__parseError)
 		g_pLog->notify("Issues during config loading encountered! Parsing error(s)");
 	__parseError = false;

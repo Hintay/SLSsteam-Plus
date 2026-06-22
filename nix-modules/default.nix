@@ -200,6 +200,25 @@
   # name (vs the old liblua5.4.a) does not matter.
   luaLib = i686.lua5_4;
 
+  # 64-bit Proton DLL injection helper. Plain C, no deps — built with the native
+  # (x86_64) stdenv, not the i686 one used for SLSsteam.so.
+  protonInject = pkgs.stdenv.mkDerivation {
+    pname = "sls-proton-inject";
+    version = rev;
+    src = lib.fileset.toSource {
+      root = ../.;
+      fileset = ../tools/proton_inject;
+    };
+    dontConfigure = true;
+    buildPhase = ''
+      gcc -shared -fPIC -O2 -Wall -Wextra -Wpedantic \
+        -o sls_proton_inject.so tools/proton_inject/inject.c
+    '';
+    installPhase = ''
+      install -Dm755 sls_proton_inject.so $out/lib/sls_proton_inject.so
+    '';
+  };
+
   # ticket-grabber: the .NET companion CLI, built as its own derivation and
   # installed into $out below (see nix-modules/ticket-grabber.nix + deps.json).
   ticketGrabber = import ./ticket-grabber.nix {
@@ -268,6 +287,7 @@ in
       mkdir -p $out/
       cp bin/SLSsteam.so $out/
       cp bin/library-inject.so $out/
+      cp ${protonInject}/lib/sls_proton_inject.so $out/
       cp ${ticketGrabber}/bin/ticket-grabber $out/ticket-grabber
 
       # Set rpath for the dynamically-linked runtime deps (curl + openssl). All

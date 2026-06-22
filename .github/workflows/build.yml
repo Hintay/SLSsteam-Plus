@@ -109,11 +109,14 @@ jobs:
           # cores during the heavy dep builds while still parallelizing the .cpp.
           make deps
           make -j"$(nproc)" bin/SLSsteam.so bin/library-inject.so
+          # 64-bit Proton DLL injection helper (plain C, no deps, no -m32)
+          gcc -shared -fPIC -O2 -Wall -Wextra -Wpedantic \
+            -o bin/sls_proton_inject.so tools/proton_inject/inject.c
 
       - name: Stage artifacts
         run: |
           mkdir -p dist
-          cp bin/SLSsteam.so bin/library-inject.so dist/
+          cp bin/SLSsteam.so bin/library-inject.so bin/sls_proton_inject.so dist/
 
       # Name artifacts after the git ref (tag-driven). Sanitize '/' so PR refs
       # like "123/merge" don't produce an invalid artifact name.
@@ -208,7 +211,7 @@ jobs:
           . artifacts/version-metadata.env
           # Stage the prebuilt .so + res assets next to the PKGBUILD and pin the
           # package version to the same metadata used by the built binaries.
-          cp artifacts/SLSsteam.so artifacts/library-inject.so artifacts/ticket-grabber "$d/"
+          cp artifacts/SLSsteam.so artifacts/library-inject.so artifacts/sls_proton_inject.so artifacts/ticket-grabber "$d/"
           cp res/SLSsteam.desktop res/SLSsteam-native.desktop res/logo.png "$d/"
           pv="$SLSSTEAM_PKGVER"
           case "$pv" in
@@ -254,8 +257,9 @@ jobs:
           # the rest are reference files / the ticket-grabber tool for the user.
           mkdir -p bundle/bin bundle/res bundle/docs \
                    bundle/tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish
-          cp artifacts/SLSsteam.so       bundle/bin/
-          cp artifacts/library-inject.so bundle/bin/
+          cp artifacts/SLSsteam.so              bundle/bin/
+          cp artifacts/library-inject.so       bundle/bin/
+          cp artifacts/sls_proton_inject.so    bundle/bin/
           cp setup.sh        bundle/
           cp res/config.toml bundle/res/
           cp -r docs/LICENSE bundle/docs/LICENSE

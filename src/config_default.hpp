@@ -94,6 +94,21 @@ LogLevel = 2
 #   76561198000000000 = [12345, 67890]
 #[DenuvoGames]
 
+# Inject a pre-compiled Windows DLL into Proton game processes.
+# Hooks NtCreateUserProcess via LD_PRELOAD and calls LdrLoadDll in
+# child processes to load the DLL. Only non-system processes
+# (outside \windows\) are injected.
+# Path: absolute Linux path to the DLL (Wine accesses it directly).
+# Apps: list of AppIds to inject into.
+# Requires sls_proton_inject.so next to SLSsteam.so.
+# Dir is optional: override where sls_proton_inject.so is searched.
+# Example:
+#   [ProtonInject]
+#   #Dir = "/custom/path"
+#   [[ProtonInject.Dlls]]
+#   Path = "/home/deck/.config/SLSsteam/OnlineFix.dll"
+#   Apps = [12345, 67890]
+
 # --- Internal (default values are optimal for most users) ---
 
 # Fetch the latest patterns online (HTTPS) on startup to pick up updated
