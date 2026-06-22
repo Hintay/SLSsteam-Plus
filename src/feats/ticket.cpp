@@ -1,6 +1,7 @@
 #include "ticket.hpp"
 
 #include "fakeappid.hpp"
+#include "forge_ticket.hpp"
 
 #include "../config.hpp"
 #include "../globals.hpp"
@@ -177,16 +178,128 @@ void Ticket::launchApp(uint32_t appId)
 	g_pLog->once("Force loaded AppOwnershipTicket for %i\n", appId);
 }
 
-void Ticket::getTicketOwnershipExtendedData(uint32_t appId)
+// On-disk cache path for the raw extended ticket data (binary, upstream style).
+static std::string getExtendedTicketPath(uint32_t appId)
 {
-	const SavedTicket cached = Ticket::getCachedTicket(appId);
-	const uint32_t steamId = cached.steamId;
-	if (!steamId)
+	std::stringstream ss;
+	ss << Ticket::getTicketDir() << "/ticketExtended_" << appId;
+	return ss.str();
+}
+
+// Fixed-layout binary cache matching the upstream CTicketData scheme.
+#pragma pack(push, 1)
+struct ExtendedTicketCache
+{
+	uint32_t steamId;
+	uint32_t appId;
+	char     ticket[0x400];
+	uint32_t size;
+	uint32_t extraData[4]; // piAppId, piSteamId, piSignature, pcbSignature
+};
+#pragma pack(pop)
+
+static bool saveExtendedTicketToCache(
+	uint32_t appId, uint32_t steamId,
+	const void* ticketData, uint32_t ticketSize,
+	uint32_t piAppId, uint32_t piSteamId,
+	uint32_t piSignature, uint32_t pcbSignature)
+{
+	if (ticketSize > sizeof(ExtendedTicketCache::ticket))
 	{
-		return;
+		g_pLog->warn("ExtendedTicket: ticket too large (%u) for cache of appid %u\n", ticketSize, appId);
+		return false;
 	}
 
-	oneTimeSteamIdSpoof = steamId;
+	ExtendedTicketCache cache {};
+	cache.steamId = steamId;
+	cache.appId   = appId;
+	std::memcpy(cache.ticket, ticketData, ticketSize);
+	cache.size = ticketSize;
+	cache.extraData[0] = piAppId;
+	cache.extraData[1] = piSteamId;
+	cache.extraData[2] = piSignature;
+	cache.extraData[3] = pcbSignature;
+
+	const auto path = getExtendedTicketPath(appId);
+	std::ofstream ofs(path, std::ios::out | std::ios::binary);
+	if (!ofs.is_open()) return false;
+	ofs.write(reinterpret_cast<const char*>(&cache), sizeof(cache));
+	g_pLog->once("ExtendedTicket: cached ticket for appid %u (%u bytes)\n", appId, ticketSize);
+	return true;
+}
+
+static bool loadExtendedTicketFromCache(uint32_t appId, ExtendedTicketCache& out)
+{
+	const auto path = getExtendedTicketPath(appId);
+	if (!std::filesystem::exists(path)) return false;
+
+	std::ifstream ifs(path, std::ios::in | std::ios::binary);
+	if (!ifs.is_open()) return false;
+	ifs.read(reinterpret_cast<char*>(&out), sizeof(out));
+	if (ifs.gcount() != sizeof(out)) return false;
+	return out.size > 0 && out.size <= sizeof(out.ticket);
+}
+
+uint32_t Ticket::getTicketOwnershipExtendedData(
+	uint32_t appId, void* pTicket, uint32_t ticketSize,
+	uint32_t* piAppId, uint32_t* piSteamId,
+	uint32_t* piSignature, uint32_t* pcbSignature,
+	void* pClientUser)
+{
+	if (ticketSize)
+	{
+		// Original returned a valid ticket — cache it (upstream behaviour).
+		saveExtendedTicketToCache(appId, g_currentSteamId, pTicket, ticketSize,
+			piAppId  ? *piAppId  : 0, piSteamId   ? *piSteamId   : 0,
+			piSignature ? *piSignature : 0, pcbSignature ? *pcbSignature : 0);
+		return 0;
+	}
+
+	// No ticket from original. Try disk cache first (upstream replay).
+	ExtendedTicketCache cached {};
+	if (loadExtendedTicketFromCache(appId, cached))
+	{
+		std::memcpy(pTicket, cached.ticket, cached.size);
+		if (piAppId)      *piAppId      = cached.extraData[0];
+		if (piSteamId)    *piSteamId    = cached.extraData[1];
+		if (piSignature)  *piSignature  = cached.extraData[2];
+		if (pcbSignature) *pcbSignature = cached.extraData[3];
+
+		oneTimeSteamIdSpoof = cached.steamId;
+		g_pLog->info("ExtendedTicket: replayed cached ticket for appid %u (%u bytes, steamId=%u)\n",
+			appId, cached.size, cached.steamId);
+		return cached.size;
+	}
+
+	// No cache — fall back to ForgeTicket.
+	if (!Ownership::shouldSpoofOwnership(appId))
+		return 0;
+
+	ForgeTicket::acquireSourceTicket(pClientUser);
+
+	ForgeTicket::AppOwnershipTicket forged{};
+	if (!ForgeTicket::getAppOwnershipTicket(appId, forged))
+		return 0;
+
+	if (forged.data.size() > 0x400)
+		return 0;
+
+	std::memcpy(pTicket, forged.data.data(), forged.data.size());
+	if (piAppId)      *piAppId      = forged.appIdOffset;
+	if (piSteamId)    *piSteamId    = forged.steamIdOffset;
+	if (piSignature)  *piSignature  = forged.signatureOffset;
+	if (pcbSignature) *pcbSignature = forged.signatureSize;
+
+	if (forged.data.size() >= 16)
+	{
+		uint64_t sid64 = 0;
+		std::memcpy(&sid64, forged.data.data() + ForgeTicket::kAppTicketSteamIdOffset, sizeof(uint64_t));
+		oneTimeSteamIdSpoof = static_cast<uint32_t>(sid64 & 0xFFFFFFFFULL);
+	}
+
+	g_pLog->info("ExtendedTicket: forged ticket for appid %u (totalSize=%u)\n",
+		appId, forged.totalSize);
+	return forged.totalSize;
 }
 
 std::string Ticket::getEncryptedTicketPath(uint32_t appId)

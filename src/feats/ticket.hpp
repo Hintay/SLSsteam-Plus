@@ -33,7 +33,15 @@ public:
 	bool saveTicketToCache(CMsgClientGetAppOwnershipTicketResponse* resp);
 
 	void launchApp(uint32_t appId);
-	void getTicketOwnershipExtendedData(uint32_t appId);
+	// Called from DetourHook. If original returned a valid ticket, caches raw
+	// bytes + offsets to disk. If original returned empty, replays from cache
+	// (or falls back to ForgeTicket). Returns overridden size, or 0 to keep
+	// the original return value.
+	uint32_t getTicketOwnershipExtendedData(
+		uint32_t appId, void* pTicket, uint32_t ticketSize,
+		uint32_t* piAppId, uint32_t* piSteamId,
+		uint32_t* piSignature, uint32_t* pcbSignature,
+		void* pClientUser);
 
 	std::string getEncryptedTicketPath(uint32_t appId);
 	SavedTicket getCachedEncryptedTicket(uint32_t appId);

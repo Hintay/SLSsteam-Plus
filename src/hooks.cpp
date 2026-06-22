@@ -1440,80 +1440,28 @@ static bool hkClientUser_RequiresLegacyCDKey(void* pClientUser, uint32_t appId, 
 	return requiresKey;
 }
 
-// IPC post-handler: GetAppOwnershipTicketExtendedData
-// Response layout (RE-verified):
-//   0x00: returnValue (u32)
-//   0x04: pTicket (ticketSize bytes)
-//   0x04+ticketSize: piAppId (u32)
-//   0x08+ticketSize: piSteamId (u32)
-//   0x0c+ticketSize: piSignature (u32)
-//   0x10+ticketSize: pcbSignature (u32)
-static void hIpc_User_GetAppOwnershipTicketExtendedData(IpcDispatch::IpcCallCtx& ctx)
+// DetourHook: GetAppOwnershipTicketExtendedData
+// Proton/lsteamclient calls this directly (bypassing IPC), so the IPC handler
+// never fires for SteamStub DRM validation. This detour covers that path.
+// Follows the upstream AceSLS cache-and-replay pattern with ForgeTicket fallback.
+static uint32_t hkClientUser_GetAppOwnershipTicketExtendedData(
+	void* pClientUser, uint32_t appId, void* pTicket, uint32_t ticketSize,
+	uint32_t* piAppId, uint32_t* piSteamId, uint32_t* piSignature, uint32_t* pcbSignature)
 {
-	const uint8_t* pkt = IpcDispatch::requestPtr(ctx.pRead);
-	if (!pkt)
+	const uint32_t ret = Hooks::IClientUser_GetAppOwnershipTicketExtendedData.tramp.fn(
+		pClientUser, appId, pTicket, ticketSize, piAppId, piSteamId, piSignature, pcbSignature);
+
+	const uint32_t sizeOverride = Ticket::getTicketOwnershipExtendedData(
+		appId, pTicket, ret, piAppId, piSteamId, piSignature, pcbSignature, pClientUser);
+
+	if (sizeOverride)
 	{
-		ctx.original(ctx.pInterface, ctx.pRead, ctx.pWrite, ctx.a3);
-		return;
+		g_pLog->once("GetAppOwnershipTicketExtendedData(%u) -> %u (override)\n", appId, sizeOverride);
+		return sizeOverride;
 	}
 
-	const uint32_t appId     = IpcDispatch::readArgU32(pkt, 0);
-	const uint32_t ticketSize = IpcDispatch::readArgU32(pkt, 4);
-
-	if (!Ownership::shouldSpoofOwnership(appId))
-	{
-		ctx.original(ctx.pInterface, ctx.pRead, ctx.pWrite, ctx.a3);
-		Ticket::getTicketOwnershipExtendedData(appId);
-		return;
-	}
-
-	ForgeTicket::acquireSourceTicket(ctx.pInterface);
-
-	ForgeTicket::AppOwnershipTicket ticket{};
-	if (!ForgeTicket::getAppOwnershipTicket(appId, ticket))
-	{
-		ctx.original(ctx.pInterface, ctx.pRead, ctx.pWrite, ctx.a3);
-		return;
-	}
-
-	// Run original to allocate the response buffer
-	ctx.original(ctx.pInterface, ctx.pRead, ctx.pWrite, ctx.a3);
-
-	uint8_t* resp = IpcDispatch::responsePtr(ctx.pWrite);
-	const uint32_t respLen = IpcDispatch::responseLen(ctx.pWrite);
-	const uint32_t needed = 0x14 + ticketSize;
-	if (!resp || respLen < needed)
-	{
-		g_pLog->warn("ForgeTicket: response buffer too small (%u < %u) for appid %u\n",
-			respLen, needed, appId);
-		return;
-	}
-
-	if (ticket.data.size() > ticketSize)
-	{
-		g_pLog->warn("ForgeTicket: ticket too large (%zu > %u) for appid %u\n",
-			ticket.data.size(), ticketSize, appId);
-		return;
-	}
-
-	IpcDispatch::writeU32(resp, 0x00, ticket.totalSize);
-	std::memcpy(resp + 0x04, ticket.data.data(), ticket.data.size());
-	IpcDispatch::writeU32(resp, 0x04 + ticketSize, ticket.appIdOffset);
-	IpcDispatch::writeU32(resp, 0x08 + ticketSize, ticket.steamIdOffset);
-	IpcDispatch::writeU32(resp, 0x0c + ticketSize, ticket.signatureOffset);
-	IpcDispatch::writeU32(resp, 0x10 + ticketSize, ticket.signatureSize);
-
-	// SteamID linkage: extract from ticket data at offset 8 (uint64 LE, low 32 bits)
-	if (ticket.data.size() >= 16)
-	{
-		uint64_t sid64 = 0;
-		std::memcpy(&sid64, ticket.data.data() + ForgeTicket::kAppTicketSteamIdOffset, sizeof(uint64_t));
-		Ticket::oneTimeSteamIdSpoof = static_cast<uint32_t>(sid64 & 0xFFFFFFFFULL);
-	}
-
-	g_pLog->info("ForgeTicket: injected ticket for appid %u (totalSize=%u, forged=%s)\n",
-		appId, ticket.totalSize,
-		ticket.data.size() != ticket.totalSize ? "yes" : "no");
+	g_pLog->debug("GetAppOwnershipTicketExtendedData(%u) -> %u\n", appId, ret);
+	return ret;
 }
 
 static void hkClientUser_RunIPCFrame(void* pClientUser, void* a1, void* a2, void* a3)
@@ -1699,6 +1647,7 @@ namespace Hooks
 	DetourHook<CUpdateManager_MarkAppChange_detour_t> CUpdateManager_MarkAppChange;
 	DetourHook<CSteamUI_FillInAppOverview_t>          CSteamUIAppController_FillInAppOverview;
 
+	DetourHook<IClientUser_GetAppOwnershipTicketExtendedData_t> IClientUser_GetAppOwnershipTicketExtendedData;
 	DetourHook<IClientAppManager_BCanRemotePlayTogether_t> IClientAppManager_BCanRemotePlayTogether;
 
 	DetourHook<IClientUser_BLoggedOn_t> IClientUser_BLoggedOn;
@@ -1792,14 +1741,11 @@ bool Hooks::setup()
 		&& IClientUGC_RunIPCFrame.setup(Patterns::IClientUGC::RunIPCFrame, hkClientUGC_RunIPCFrame)
 		&& IClientUtils_RunIPCFrame.setup(Patterns::IClientUtils::RunIPCFrame, hkClientUtils_RunIPCFrame);
 
-	IpcDispatch::registerHandler(
-		IpcHash::IClientUser::kGetAppOwnershipTicketExtendedData,
-		hIpc_User_GetAppOwnershipTicketExtendedData);
-
 	succeeded = succeeded
 		&& IClientUser_RunIPCFrame.setup(Patterns::IClientUser::RunIPCFrame, hkClientUser_RunIPCFrame)
 		&& IClientUserStats_RunIPCFrame.setup(Patterns::IClientUserStats::RunIPCFrame, hkClientUserStats_RunIPCFrame)
 
+		&& IClientUser_GetAppOwnershipTicketExtendedData.setup(Patterns::IClientUser::GetAppOwnershipTicketExtendedData, &hkClientUser_GetAppOwnershipTicketExtendedData)
 		&& IClientUser_BLoggedOn.setup(Patterns::IClientUser::BLoggedOn, &hkClientUser_BLoggedOn)
 		&& IClientUser_BUpdateAppOwnershipTicket.setup(Patterns::IClientUser::BUpdateAppOwnershipTicket, hkClientUser_BUpdateOwnershipTicket)
 		&& IClientUser_IsUserSubscribedAppInTicket.setup(Patterns::IClientUser::IsUserSubscribedAppInTicket, &hkClientUser_IsUserSubscribedAppInTicket)
@@ -1880,6 +1826,7 @@ void Hooks::place()
 	IClientUser_RunIPCFrame.place();
 	IClientUserStats_RunIPCFrame.place();
 
+	IClientUser_GetAppOwnershipTicketExtendedData.place();
 	IClientUser_BLoggedOn.place();
 	IClientUser_BUpdateAppOwnershipTicket.place();
 	IClientUser_IsUserSubscribedAppInTicket.place();
@@ -1937,6 +1884,7 @@ void Hooks::remove()
 	IClientUser_RunIPCFrame.remove();
 	IClientUserStats_RunIPCFrame.remove();
 
+	IClientUser_GetAppOwnershipTicketExtendedData.remove();
 	IClientUser_BLoggedOn.remove();
 	IClientUser_BUpdateAppOwnershipTicket.remove();
 	IClientUser_IsUserSubscribedAppInTicket.remove();

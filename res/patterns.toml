@@ -232,7 +232,6 @@ IsCloudEnabledForApp = 0x88A72792
 SetCloudEnabledForApp = 0x2EAADA14
 
 [IpcHashes.IClientUser]
-GetAppOwnershipTicketExtendedData = 0xC7E71245
 GetSteamID = 0xD6FC3200
 
 [IpcHashes.IClientUtils]
