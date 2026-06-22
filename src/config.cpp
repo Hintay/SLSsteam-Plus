@@ -100,10 +100,11 @@ static const NewConfigEntry kNewConfigEntries[] = {
 	  "# signatures and IpcHashes for new Steam builds without re-downloading SLSsteam.\n"
 	  "#OnlinePatterns = true\n" },
 
-	{ "AchievementsSchemaProbeNoConnection", "Internal",
-	  "# For Player.GetUserStats schema probes with sha_schema: set to true to drop\n"
-	  "# those probes for fake-owned apps and inject a fabricated no-connection response.\n"
-	  "#AchievementsSchemaProbeNoConnection = false\n" },
+	{ "OfflineAchievementsSchema", "Internal",
+	  "# Use only pre-generated offline schema files (e.g. from SLScheevo) instead\n"
+	  "# of redirecting stats requests to a donor SteamID. When enabled, achievement\n"
+	  "# data comes exclusively from local bin files in appcache/stats/.\n"
+	  "#OfflineAchievementsSchema = false\n" },
 
 	{ "PackageInjection", "Internal",
 	  "# Inject added apps into Steam's live package table (pkg0) and re-evaluate\n"
@@ -880,7 +881,7 @@ bool CConfig::loadSettings()
 	fakeWalletBalance = getSetting<int32_t>(node, "FakeWalletBalance", 0);
 	disableCloud = getSetting<bool>(node, "DisableCloud", true);
 	blockTicketRequests = getSetting<bool>(node, "BlockTicketRequests", true);
-	achievementsSchemaProbeNoConnection = getSetting<bool>(node, "AchievementsSchemaProbeNoConnection", false);
+	offlineAchievementsSchema = getSetting<bool>(node, "OfflineAchievementsSchema", false);
 	extendedLogging = getSetting<bool>(node, "ExtendedLogging", false);
 	logLevel = getSetting<unsigned int>(node, "LogLevel", 2);
 
@@ -898,7 +899,7 @@ bool CConfig::loadSettings()
 	g_pLog->info("FakeWalletBalance: %i\n", fakeWalletBalance.get());
 	g_pLog->info("DisableCloud: %i\n", disableCloud.get());
 	g_pLog->info("BlockTicketRequests: %i\n", blockTicketRequests.get());
-	g_pLog->info("AchievementsSchemaProbeNoConnection: %i\n", achievementsSchemaProbeNoConnection.get());
+	g_pLog->info("OfflineAchievementsSchema: %i\n", offlineAchievementsSchema.get());
 	g_pLog->info("ExtendedLogging: %i\n", extendedLogging.get());
 	g_pLog->info("LogLevel: %i\n", logLevel.get());
 

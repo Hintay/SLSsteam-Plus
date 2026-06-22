@@ -104,9 +104,10 @@ LogLevel = 2
 # licenses without a restart.
 #PackageInjection = true
 
-# For Player.GetUserStats schema probes with sha_schema: set to true to drop
-# those probes for fake-owned apps and inject a fabricated no-connection response.
-#AchievementsSchemaProbeNoConnection = false
+# Use only pre-generated offline schema files (e.g. from SLScheevo) instead
+# of redirecting stats requests to a donor SteamID. When enabled, achievement
+# data comes exclusively from local bin files in appcache/stats/.
+#OfflineAchievementsSchema = false
 
 # Manifest settings for download functionality.
 # Built-in request-code providers: opensteamtool / wudrm / steamrun.

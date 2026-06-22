@@ -17,7 +17,6 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 // User-stats interception at the raw packet layer. Steam fetches achievement/stat
@@ -34,12 +33,12 @@
 // For added (lua/config) apps that are not genuinely owned, the outgoing query's
 // steamid is rewritten to a donor so the server returns a valid schema; incoming
 // stat values are then cleared so Steam keeps the schema but falls back to local
-// cache. sha_schema probes default behavior is to send unchanged;
-// AchievementsSchemaProbeNoConnection restores the older drop+fabricated
-// no-connection path. Redirect only controlled apps that have not
-// been confirmed genuinely owned by Steam's original ownership path. Do not use
-// CUser::isSubscribed() here: package injection can make fake ownership look
-// subscribed and would exclude exactly the apps that need redirecting.
+// cache. Schema probes (requests with sha_schema) are converted to full fetches
+// by stripping sha_schema — RE of CAPIJobRequestUserStats confirmed the response
+// handler is response-driven and does not track the request type. This ensures
+// schema updates (e.g. new achievements) are picked up even though the real user
+// does not own the game. Redirect only controlled apps that have not been
+// confirmed genuinely owned by Steam's original ownership path.
 
 namespace Achievements
 {
@@ -48,32 +47,32 @@ namespace Achievements
 		constexpr char TARGET_JOB_NAME[] = "Player.GetUserStats#1";
 
 		constexpr auto kLegacyPendingTtl = std::chrono::seconds(60);
-		constexpr size_t kMaxSchemaFailures = 16;
 
 		struct LegacyPending {
 			size_t count = 0;
 			std::chrono::steady_clock::time_point lastTouched;
 		};
 
-		struct SchemaFailureResponse {
-			uint64_t jobId = 0;
+		// Fabricated NO_CONNECTION response for offline schema mode (151 path).
+		struct OfflineInjection {
 			uint32_t appId = 0;
 			std::vector<uint8_t> packet;
 		};
 
-		// jobid_source (outgoing 151) -> appId. Touched from the send hook and the
-		// recv hook; guard with g_mutex. The atomics are lock-free fast-path gates for
-		// the recv hook (runs on every incoming packet); only written under g_mutex.
+		// jobid_source (outgoing 151) -> appId for online donor redirect.
+		// Touched from the send hook and the recv hook; guard with g_mutex.
+		// The atomics are lock-free fast-path gates for the recv hook (runs on
+		// every incoming packet); only written under g_mutex.
 		std::unordered_map<uint64_t, uint32_t> g_pending;
 		std::unordered_map<uint32_t, LegacyPending> g_legacyPending;
-		std::deque<SchemaFailureResponse> g_schemaFailures;
+		std::deque<OfflineInjection> g_offlineQueue;
 		std::mutex          g_mutex;
 		std::atomic<size_t> g_pendingCount{0};
 		std::atomic<size_t> g_legacyPendingCount{0};
-		std::atomic<size_t> g_schemaFailureCount{0};
+		std::atomic<size_t> g_offlineQueueCount{0};
 
-		// Fabricated injection bytes are moved here so nextInjection's output remains
-		// valid until the immediate borrowed RecvPkt delivery consumes it.
+		// Holds the injected packet bytes so the pointer returned by nextInjection
+		// remains valid until RecvPkt consumes it.
 		thread_local std::vector<uint8_t> t_injectBuf;
 
 		// Controlled app, unless the original ownership path proved it is genuinely owned.
@@ -91,7 +90,32 @@ namespace Achievements
 				legacyTotal += it.second.count;
 			}
 			g_legacyPendingCount.store(legacyTotal, std::memory_order_release);
-			g_schemaFailureCount.store(g_schemaFailures.size(), std::memory_order_release);
+		}
+
+		bool queueOfflineResponse(uint32_t appId, uint64_t jobId, CMsgProtoBufHeader hdr)
+		{
+			hdr.set_jobid_target(jobId);
+			hdr.clear_jobid_source();
+			hdr.set_eresult(ERESULT_NO_CONNECTION);
+
+			CPlayer_GetUserStats_Response resp;
+			std::string newHdr, newBody;
+			if (!hdr.SerializeToString(&newHdr) || !resp.SerializeToString(&newBody)) return false;
+
+			OfflineInjection inj;
+			inj.appId = appId;
+			const uint8_t* out = nullptr;
+			uint32_t outSz = 0;
+			if (!netpacket::AssembleRaw(inj.packet,
+			                           static_cast<uint32_t>(EMSG_SERVICE_METHOD_RESPONSE) | kMsgHdrProtoFlag,
+			                           newHdr.data(), newHdr.size(), newBody.data(), newBody.size(),
+			                           out, outSz))
+				return false;
+
+			std::lock_guard<std::mutex> lock(g_mutex);
+			g_offlineQueue.push_back(std::move(inj));
+			g_offlineQueueCount.store(g_offlineQueue.size(), std::memory_order_release);
+			return true;
 		}
 
 		void purgeExpiredLegacyLocked(std::chrono::steady_clock::time_point now)
@@ -171,39 +195,6 @@ namespace Achievements
 			return true;
 		}
 
-		bool buildSchemaFailurePacket(CMsgProtoBufHeader hdr, uint64_t jobId,
-		                              std::vector<uint8_t>& packet)
-		{
-			hdr.set_jobid_target(jobId);
-			hdr.clear_jobid_source();
-			hdr.set_eresult(ERESULT_NO_CONNECTION);
-
-			CPlayer_GetUserStats_Response resp;
-			std::string newHdr, newBody;
-			if (!hdr.SerializeToString(&newHdr) || !resp.SerializeToString(&newBody)) return false;
-
-			const uint8_t* out = nullptr;
-			uint32_t outSize = 0;
-			return netpacket::AssembleRaw(packet,
-			                              static_cast<uint32_t>(EMSG_SERVICE_METHOD_RESPONSE) | kMsgHdrProtoFlag,
-			                              newHdr.data(), newHdr.size(), newBody.data(), newBody.size(),
-			                              out, outSize);
-		}
-
-		bool queueSchemaFailure(uint32_t appId, uint64_t jobId, CMsgProtoBufHeader hdr)
-		{
-			SchemaFailureResponse failure;
-			failure.appId = appId;
-			failure.jobId = jobId;
-			if (!buildSchemaFailurePacket(std::move(hdr), jobId, failure.packet)) return false;
-
-			std::lock_guard<std::mutex> lock(g_mutex);
-			if (g_schemaFailures.size() >= kMaxSchemaFailures) return false;
-			g_schemaFailures.push_back(std::move(failure));
-			publishCountsLocked();
-			return true;
-		}
-
 	}
 
 	bool onSendFrame(const uint8_t* pubData, uint32_t cubData,
@@ -226,36 +217,32 @@ namespace Achievements
 			if (!req.has_appid()) return false;
 
 			const uint32_t appId = req.appid();
-			if (req.has_sha_schema())
+			if (!shouldRedirectStats(appId)) return false;
+			if (g_config.offlineAchievementsSchema.get())
 			{
-				if (!g_config.achievementsSchemaProbeNoConnection.get())
-				{
-					g_pLog->debug("Achievements: raw 151 schema probe app=%u sha_schema_len=%zu, not spoofing\n",
-					              appId, req.sha_schema().size());
-					return false;
-				}
-
-				if (!shouldRedirectStats(appId)) return false;
 				if (!hdr.has_jobid_source()) return false;
-
-				const uint64_t jobId = hdr.jobid_source();
-				if (!queueSchemaFailure(appId, jobId, hdr))
+				if (!queueOfflineResponse(appId, hdr.jobid_source(), hdr))
 				{
-					g_pLog->warn("Achievements: failed to queue raw 151 schema no-connection app=%u (jobid=%llu), passing through\n",
-					             appId, static_cast<unsigned long long>(jobId));
+					g_pLog->warn("Achievements: failed to queue offline 151 response app=%u\n", appId);
 					return false;
 				}
-
 				outData = nullptr;
 				outSize = 0;
-				g_pLog->debug("Achievements: raw 151 drop schema probe app=%u sha_schema_len=%zu (jobid=%llu), will inject no-connection\n",
-				              appId, req.sha_schema().size(), static_cast<unsigned long long>(jobId));
+				g_pLog->debug("Achievements: raw 151 app=%u offline — dropped, injecting NO_CONNECTION\n", appId);
 				return true;
 			}
-
-			// Initial live-stats fetch: app id is present and this is not a schema-only probe.
-			if (!shouldRedirectStats(appId)) return false;
 			if (!hdr.has_jobid_source()) return false;
+
+			const bool isProbe = req.has_sha_schema();
+			if (isProbe)
+			{
+				// Strip sha_schema to turn the probe into a full fetch.
+				// RE confirmed: CAPIJobRequestUserStats is response-driven — it
+				// checks response.has_schema(), not what the request contained.
+				// The server will return the complete schema for the donor, and
+				// onRecvPacket clears the donor's stat values as usual.
+				req.clear_sha_schema();
+			}
 
 			const uint64_t jobId = hdr.jobid_source();
 			const uint64_t donor = LuaLoader::getStatSteamId(appId);
@@ -277,7 +264,8 @@ namespace Achievements
 			}
 
 			addServicePending(jobId, appId);
-			g_pLog->debug("Achievements: raw 151 redirect app=%u using donor steamid (jobid=%llu)\n",
+			g_pLog->debug("Achievements: raw 151 %s app=%u using donor steamid (jobid=%llu)\n",
+			              isProbe ? "probe->full" : "redirect",
 			              appId, static_cast<unsigned long long>(jobId));
 			return true;
 		}
@@ -293,6 +281,12 @@ namespace Achievements
 
 			const uint32_t appId = static_cast<uint32_t>(req.game_id());
 			if (!shouldRedirectStats(appId)) return false;
+			if (g_config.offlineAchievementsSchema.get())
+			{
+				outData = nullptr;
+				outSize = 0;
+				return true;
+			}
 
 			const uint64_t donor = LuaLoader::getStatSteamId(appId);
 			req.set_steam_id_for_user(donor);
@@ -321,27 +315,21 @@ namespace Achievements
 
 	bool nextInjection(const uint8_t*& outData, uint32_t& outSize)
 	{
-		if (g_schemaFailureCount.load(std::memory_order_acquire) == 0) return false;
+		if (g_offlineQueueCount.load(std::memory_order_acquire) == 0) return false;
 
-		SchemaFailureResponse failure;
+		OfflineInjection inj;
 		{
 			std::lock_guard<std::mutex> lock(g_mutex);
-			if (g_schemaFailures.empty())
-			{
-				publishCountsLocked();
-				return false;
-			}
-
-			failure = std::move(g_schemaFailures.front());
-			g_schemaFailures.pop_front();
-			publishCountsLocked();
+			if (g_offlineQueue.empty()) return false;
+			inj = std::move(g_offlineQueue.front());
+			g_offlineQueue.pop_front();
+			g_offlineQueueCount.store(g_offlineQueue.size(), std::memory_order_release);
 		}
 
-		t_injectBuf = std::move(failure.packet);
+		t_injectBuf = std::move(inj.packet);
 		outData = t_injectBuf.data();
 		outSize = static_cast<uint32_t>(t_injectBuf.size());
-		g_pLog->debug("Achievements: raw 147 injected no-connection for schema probe app=%u (jobid=%llu)\n",
-		              failure.appId, static_cast<unsigned long long>(failure.jobId));
+		g_pLog->debug("Achievements: injected offline NO_CONNECTION for app=%u\n", inj.appId);
 		return outData && outSize;
 	}
 
@@ -448,8 +436,8 @@ namespace Achievements
 
 	void getPlayerStats(uint32_t& eresult)
 	{
-		// No-op: the raw network hooks redirect stats per-app; the CAPIJob detour is
-		// kept only for hook-wiring compatibility.
-		(void)eresult;
+		if (!g_config.offlineAchievementsSchema.get()) return;
+		if (eresult == ERESULT_OK) return;
+		eresult = ERESULT_NO_CONNECTION;
 	}
 }
