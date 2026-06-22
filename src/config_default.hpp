@@ -99,14 +99,24 @@ LogLevel = 2
 # child processes to load the DLL. Only non-system processes
 # (outside \windows\) are injected.
 # Path: absolute Linux path to the DLL (Wine accesses it directly).
-# Apps: list of AppIds to inject into.
+# Apps: list of AppIds to inject into (optional if Flag is set).
+# Flag: a Steam launch option (e.g. "-onlinefix") that triggers injection.
+#   Any game launched with this flag will inject the DLL; the flag is
+#   stripped from argv before the game sees it. Apps and Flag can coexist.
 # Requires sls_proton_inject.so next to SLSsteam.so.
 # Dir is optional: override where sls_proton_inject.so is searched.
-# Example:
+# Examples:
 #   [ProtonInject]
 #   #Dir = "/custom/path"
+#
+#   # Flag: inject into any game launched with -onlinefix in its launch options
 #   [[ProtonInject.Dlls]]
 #   Path = "/home/deck/.config/SLSsteam/OnlineFix.dll"
+#   Flag = "-onlinefix"
+#
+#   # Apps: inject into specific AppIds only
+#   [[ProtonInject.Dlls]]
+#   Path = "/path/to/other.dll"
 #   Apps = [12345, 67890]
 
 # --- Internal (default values are optimal for most users) ---

@@ -96,13 +96,17 @@ namespace
 
 	// ── execvpe GOT hook ───────────────────────────────────────────
 	// Steam calls execvpe(file, argv, envp) in the child after fork.
-	// envp is CProcessEnvironmentManager's array — we append our vars to it.
+	// We match by AppId (from envp) or by Flag (substring in argv), then
+	// inject LD_PRELOAD + PROTON_SLS_INJECT_DLL into envp.
 
 	using execvpe_fn = int(*)(const char*, char* const[], char* const[]);
 	execvpe_fn g_origExecvpe = nullptr;
 
 	std::string g_injectPreloadPaths;
 	std::unordered_map<uint32_t, std::string> g_injectDllByApp;
+
+	struct FlagEntry { std::string flag; std::string dllPath; };
+	std::vector<FlagEntry> g_injectDllByFlag;
 
 	size_t getSystemPageSize()
 	{
@@ -147,6 +151,7 @@ namespace
 	{
 		g_injectPreloadPaths.clear();
 		g_injectDllByApp.clear();
+		g_injectDllByFlag.clear();
 	}
 
 	bool colonListContains(const char* value, const std::string& needle)
@@ -164,29 +169,54 @@ namespace
 		return false;
 	}
 
-	std::string findDllForEnv(char* const envp[])
+	struct LaunchMatch { std::string dllPath; int argIndex; size_t flagPos; size_t flagLen; };
+
+	LaunchMatch findDllForLaunch(char* const argv[], char* const envp[])
 	{
 		uint32_t appId = 0;
 		if (!parseAppId(getEnvValue(envp, "SteamAppId"), appId))
 			parseAppId(getEnvValue(envp, "SteamGameId"), appId);
-		if (!appId) return "";
 
-		auto it = g_injectDllByApp.find(appId);
-		return it != g_injectDllByApp.end() ? it->second : "";
+		if (appId) {
+			auto it = g_injectDllByApp.find(appId);
+			if (it != g_injectDllByApp.end())
+				return {it->second, -1, 0, 0};
+		}
+
+		if (!g_injectDllByFlag.empty() && argv) {
+			for (int i = 0; argv[i]; i++) {
+				for (const auto& fe : g_injectDllByFlag) {
+					const char* pos = strstr(argv[i], fe.flag.c_str());
+					if (!pos) continue;
+					size_t off = pos - argv[i];
+					size_t flen = fe.flag.size();
+					char after = pos[flen];
+					char before = (off > 0) ? pos[-1] : ' '; /* start-of-string counts as boundary */
+					if ((before == ' ' || before == '\t') &&
+					    (after == '\0' || after == ' ' || after == '\t' || after == '\''))
+						return {fe.dllPath, i, off, flen};
+				}
+			}
+		}
+
+		return {"", -1, 0, 0};
 	}
 
 	void refreshInjectRules(const CConfig::ProtonInjectConfig& cfg, uint32_t currentAppId)
 	{
 		g_injectDllByApp.clear();
+		g_injectDllByFlag.clear();
 		for (const auto& entry : cfg.dlls) {
 			if (entry.path.empty()) continue;
 			if (!std::filesystem::exists(entry.path)) {
-				if (entry.apps.count(currentAppId))
+				if (entry.apps.count(currentAppId) || !entry.flag.empty())
 					g_pLog->warn("ProtonInject: DLL not found: %s\n", entry.path.c_str());
 				continue;
 			}
 			for (const auto appId : entry.apps)
 				g_injectDllByApp.emplace(appId, entry.path);
+			if (!entry.flag.empty())
+				g_injectDllByFlag.push_back({entry.flag, entry.path});
 		}
 	}
 
@@ -221,9 +251,30 @@ namespace
 			return g_origExecvpe(file, argv, envp);
 		}
 
-		const std::string dllPath = findDllForEnv(envp);
-		if (dllPath.empty() || g_injectPreloadPaths.empty())
+		const auto match = findDllForLaunch(argv, envp);
+		if (match.dllPath.empty() || g_injectPreloadPaths.empty())
 			return g_origExecvpe(file, argv, envp);
+
+		/* If matched by flag, strip it from the argv string so the game
+		 * doesn't see it. Steam passes the whole command as /bin/sh -c "...",
+		 * so the flag is a substring within argv[2], not a separate element. */
+		char** newArgv = const_cast<char**>(argv);
+		std::string patchedArg;
+		if (match.argIndex >= 0) {
+			patchedArg = argv[match.argIndex];
+			patchedArg.erase(match.flagPos, match.flagLen);
+			/* Collapse double spaces left by removal */
+			while (match.flagPos < patchedArg.size() && match.flagPos > 0 &&
+			       patchedArg[match.flagPos] == ' ' && patchedArg[match.flagPos - 1] == ' ')
+				patchedArg.erase(match.flagPos, 1);
+
+			int argc = 0;
+			while (argv[argc]) argc++;
+			newArgv = static_cast<char**>(alloca((argc + 1) * sizeof(char*)));
+			for (int i = 0; i < argc; i++)
+				newArgv[i] = (i == match.argIndex) ? const_cast<char*>(patchedArg.c_str()) : argv[i];
+			newArgv[argc] = nullptr;
+		}
 
 		// Count envp entries
 		int count = 0;
@@ -233,7 +284,7 @@ namespace
 		// +2 for LD_PRELOAD + PROTON_SLS_INJECT_DLL, +1 for NULL
 		char** newEnvp = static_cast<char**>(alloca((count + 3) * sizeof(char*)));
 
-		std::string dllEntry = "PROTON_SLS_INJECT_DLL=" + dllPath;
+		std::string dllEntry = "PROTON_SLS_INJECT_DLL=" + match.dllPath;
 
 		std::string ldPreloadEntry;
 		for (int i = 0; i < count; i++) {
@@ -269,7 +320,7 @@ namespace
 			newEnvp[dst++] = const_cast<char*>(dllEntry.c_str());
 		newEnvp[dst] = nullptr;
 
-		return g_origExecvpe(file, argv, newEnvp);
+		return g_origExecvpe(file, newArgv, newEnvp);
 	}
 
 	bool g_hooked = false;
@@ -316,7 +367,7 @@ void ProtonInject::onLaunchApp(uint32_t appId)
 	}
 
 	refreshInjectRules(cfg, appId);
-	if (!g_injectDllByApp.count(appId)) return;
+	if (g_injectDllByApp.empty() && g_injectDllByFlag.empty()) return;
 	g_injectPreloadPaths = helperSo;
 
 	if (!g_hooked) {
@@ -324,5 +375,9 @@ void ProtonInject::onLaunchApp(uint32_t appId)
 		if (!g_hooked) return;
 	}
 
-	g_pLog->info("ProtonInject: appId %u -> %s\n", appId, g_injectDllByApp[appId].c_str());
+	auto appIt = g_injectDllByApp.find(appId);
+	if (appIt != g_injectDllByApp.end())
+		g_pLog->info("ProtonInject: appId %u -> %s\n", appId, appIt->second.c_str());
+	else if (!g_injectDllByFlag.empty())
+		g_pLog->info("ProtonInject: appId %u (flag matching active, %zu rules)\n", appId, g_injectDllByFlag.size());
 }

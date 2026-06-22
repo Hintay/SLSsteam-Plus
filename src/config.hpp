@@ -27,6 +27,7 @@ public:
 	struct ProtonInjectEntry
 	{
 		std::string path;
+		std::string flag;
 		std::unordered_set<uint32_t> apps;
 	};
 

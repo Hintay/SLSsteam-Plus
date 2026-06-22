@@ -98,19 +98,16 @@ static const NewConfigEntry kNewConfigEntries[] = {
 	// --- Advanced ---
 	{ "ProtonInject", "Advanced",
 	  "# Inject a pre-compiled Windows DLL into Proton game processes.\n"
-	  "# Hooks NtCreateUserProcess via LD_PRELOAD and calls LdrLoadDll in\n"
-	  "# child processes to load the DLL. Only non-system processes\n"
-	  "# (outside \\windows\\) are injected.\n"
-	  "# Path: absolute Linux path to the DLL (Wine accesses it directly).\n"
-	  "# Apps: list of AppIds to inject into.\n"
+	  "# Path: absolute Linux path to the DLL.\n"
+	  "# Apps: list of AppIds to inject into (optional if Flag is set).\n"
+	  "# Flag: a Steam launch option that triggers injection for any game.\n"
+	  "#   The flag is stripped from argv before the game sees it.\n"
 	  "# Requires sls_proton_inject.so next to SLSsteam.so.\n"
-	  "# Dir is optional: override where sls_proton_inject.so is searched.\n"
 	  "# Example:\n"
 	  "#   [ProtonInject]\n"
-	  "#   #Dir = \"/custom/path\"\n"
 	  "#   [[ProtonInject.Dlls]]\n"
 	  "#   Path = \"/home/deck/.config/SLSsteam/OnlineFix.dll\"\n"
-	  "#   Apps = [12345, 67890]\n" },
+	  "#   Flag = \"-onlinefix\"\n" },
 
 	// --- Internal ---
 	{ "OnlinePatterns", "Internal",
@@ -1123,6 +1120,7 @@ bool CConfig::loadSettings()
 					if (!tbl) continue;
 					ProtonInjectEntry entry;
 					entry.path = (*tbl)["Path"].value_or(std::string(""));
+					entry.flag = (*tbl)["Flag"].value_or(std::string(""));
 					if (auto* apps = (*tbl)["Apps"].as_array()) {
 						for (const auto& a : *apps) {
 							if (auto v = a.value<int64_t>()) {
@@ -1134,9 +1132,13 @@ bool CConfig::loadSettings()
 							else { __parseError = true; }
 						}
 					}
-					if (!entry.path.empty() && !entry.apps.empty()) {
-						g_pLog->info("ProtonInject: %s -> %zu app(s)\n",
-							entry.path.c_str(), entry.apps.size());
+					if (!entry.path.empty() && (!entry.apps.empty() || !entry.flag.empty())) {
+						if (!entry.flag.empty())
+							g_pLog->info("ProtonInject: %s -> flag \"%s\" + %zu app(s)\n",
+								entry.path.c_str(), entry.flag.c_str(), entry.apps.size());
+						else
+							g_pLog->info("ProtonInject: %s -> %zu app(s)\n",
+								entry.path.c_str(), entry.apps.size());
 						cfg.dlls.push_back(std::move(entry));
 					}
 				}

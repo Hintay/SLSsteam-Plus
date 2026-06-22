@@ -572,12 +572,34 @@ static void resolve_pe_ntdll_base_from_siblings(const char *pe_needle)
 
 static size_t u16len(const uint16_t *s) { size_t n = 0; while (s[n]) n++; return n; }
 
-static int inject_dll(HANDLE hProcess, const uint16_t *dllPath)
+enum InjectStatus {
+    INJECT_OK = 0,
+    INJECT_NO_NTDLL_BASE,
+    INJECT_ALLOC_FAILED,
+    INJECT_WRITE_FAILED,
+    INJECT_THREAD_FAILED,
+    INJECT_REMOTE_LOAD_FAILED,  /* LdrLoadDll returned non-zero NTSTATUS */
+    INJECT_SHELLCODE_TIMEOUT,   /* sentinel unchanged — thread didn't complete */
+};
+
+static const char *inject_status_str(enum InjectStatus s)
 {
-    if (!g_pe_ntdll_base) {
-        dbg_raw("inject: no PE ntdll base cached");
-        return -1;
+    switch (s) {
+    case INJECT_OK:                 return "OK";
+    case INJECT_NO_NTDLL_BASE:     return "no PE ntdll base";
+    case INJECT_ALLOC_FAILED:      return "NtAllocateVirtualMemory failed";
+    case INJECT_WRITE_FAILED:      return "NtWriteVirtualMemory failed";
+    case INJECT_THREAD_FAILED:     return "NtCreateThreadEx failed";
+    case INJECT_REMOTE_LOAD_FAILED:return "LdrLoadDll failed";
+    case INJECT_SHELLCODE_TIMEOUT: return "shellcode timeout";
     }
+    return "unknown";
+}
+
+static enum InjectStatus inject_dll(HANDLE hProcess, const uint16_t *dllPath)
+{
+    if (!g_pe_ntdll_base)
+        return INJECT_NO_NTDLL_BASE;
     uint64_t ldr_addr = g_pe_ntdll_base + g_LdrLoadDll_rva;
 
     uint8_t local[REMOTE_TOTAL_SIZE];
@@ -585,7 +607,7 @@ static int inject_dll(HANDLE hProcess, const uint16_t *dllPath)
 
     size_t pathLen = u16len(dllPath);
     if ((pathLen + 1) * sizeof(uint16_t) > REMOTE_USTR_OFF)
-        return -1;
+        return INJECT_ALLOC_FAILED;
     memcpy(local, dllPath, (pathLen + 1) * sizeof(uint16_t));
 
     void *remoteMem = NULL;
@@ -593,17 +615,15 @@ static int inject_dll(HANDLE hProcess, const uint16_t *dllPath)
     NTSTATUS st = pNtAllocateVirtualMemory(hProcess, &remoteMem, 0,
                                             &regionSize, MEM_COMMIT | MEM_RESERVE,
                                             PAGE_EXECUTE_READWRITE);
-    if (st != STATUS_SUCCESS || !remoteMem) {
-        dbg_raw("inject: NtAllocateVirtualMemory failed");
-        return -1;
-    }
+    if (st != STATUS_SUCCESS || !remoteMem)
+        return INJECT_ALLOC_FAILED;
 
     uintptr_t base = (uintptr_t)remoteMem;
 
     /* UNICODE_STRING { Length, MaximumLength, (pad), Buffer } — sizes in bytes (UTF-16) */
     *(uint16_t *)(local + REMOTE_USTR_OFF + 0) = (uint16_t)(pathLen * 2);
     *(uint16_t *)(local + REMOTE_USTR_OFF + 2) = (uint16_t)((pathLen + 1) * 2);
-    *(uint64_t *)(local + REMOTE_USTR_OFF + 8) = base;  /* Buffer → remote dll_path */
+    *(uint64_t *)(local + REMOTE_USTR_OFF + 8) = base;
 
     /* Shellcode */
     uint8_t *sc = local + REMOTE_CODE_OFF;
@@ -618,21 +638,18 @@ static int inject_dll(HANDLE hProcess, const uint16_t *dllPath)
     sc[off++] = 0x48; sc[off++] = 0xB8;                                     /* movabs rax   */
     *(uint64_t *)(sc + off) = ldr_addr; off += 8;
     sc[off++] = 0xFF; sc[off++] = 0xD0;                                     /* call rax     */
-    /* Store NTSTATUS return value at REMOTE_STAT_OFF */
     sc[off++] = 0x48; sc[off++] = 0xB9;                                     /* movabs rcx   */
     *(uint64_t *)(sc + off) = base + REMOTE_STAT_OFF; off += 8;
     sc[off++] = 0x89; sc[off++] = 0x01;                                     /* mov [rcx],eax */
     sc[off++] = 0x48; sc[off++] = 0x83; sc[off++] = 0xC4; sc[off++] = 0x28; /* add rsp,0x28 */
     sc[off++] = 0xC3;                                                        /* ret          */
 
-    /* Mark status as sentinel before injection */
     *(uint32_t *)(local + REMOTE_STAT_OFF) = 0xDEADBEEF;
 
     st = pNtWriteVirtualMemory(hProcess, remoteMem, local, REMOTE_TOTAL_SIZE, NULL);
     if (st != STATUS_SUCCESS) {
-        dbg_raw("inject: NtWriteVirtualMemory failed");
         pNtFreeVirtualMemory(hProcess, &remoteMem, &regionSize, MEM_RELEASE);
-        return -1;
+        return INJECT_WRITE_FAILED;
     }
 
     HANDLE hRemoteThread = NULL;
@@ -640,35 +657,25 @@ static int inject_dll(HANDLE hProcess, const uint16_t *dllPath)
                            (void *)(base + REMOTE_CODE_OFF), NULL,
                            0, 0, 0, 0, NULL);
     if (st != STATUS_SUCCESS || !hRemoteThread) {
-        dbg_raw("inject: NtCreateThreadEx failed");
         pNtFreeVirtualMemory(hProcess, &remoteMem, &regionSize, MEM_RELEASE);
-        return -1;
+        return INJECT_THREAD_FAILED;
     }
 
     int64_t timeout = -50000000LL; /* 5s relative */
     pNtWaitForSingleObject(hRemoteThread, 0, &timeout);
     pNtClose(hRemoteThread);
 
-    /* Read back LdrLoadDll NTSTATUS from remote memory */
     uint32_t remote_status = 0xDEADBEEF;
     if (pNtReadVirtualMemory)
         pNtReadVirtualMemory(hProcess, (const void *)(base + REMOTE_STAT_OFF),
                               &remote_status, 4, NULL);
     pNtFreeVirtualMemory(hProcess, &remoteMem, &regionSize, MEM_RELEASE);
 
-    if (remote_status == 0) {
-        dbg_raw("inject: OK");
-    } else {
-        char msg[48] = "inject: NTSTATUS 0x";
-        char *p = msg + 19;
-        for (int i = 28; i >= 0; i -= 4) {
-            int d = (remote_status >> i) & 0xF;
-            *p++ = d < 10 ? '0' + d : 'a' + d - 10;
-        }
-        *p = '\0';
-        dbg_raw(msg);
-    }
-    return 0;
+    if (remote_status == 0)
+        return INJECT_OK;
+    if (remote_status == 0xDEADBEEF)
+        return INJECT_SHELLCODE_TIMEOUT;
+    return INJECT_REMOTE_LOAD_FAILED;
 }
 
 /* ── NtCreateUserProcess hook ───────────────────────────────────────── */
@@ -751,8 +758,8 @@ static NTSTATUS hook_NtCreateUserProcess(
             resolve_pe_ntdll_base_from_siblings("x86_64-windows/ntdll.dll");
 
         if (should_inject_child(*ProcessHandle)) {
-            dbg_raw("NtCreateUserProcess: injecting");
-            inject_dll(*ProcessHandle, g_dll_winpath);
+            enum InjectStatus is = inject_dll(*ProcessHandle, g_dll_winpath);
+            dbg_raw(inject_status_str(is));
         }
     }
 
