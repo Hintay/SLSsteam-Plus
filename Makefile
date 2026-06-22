@@ -4,6 +4,9 @@
 #Force g++ cause clang crashes on some hooks
 CXX := g++
 CC := gcc
+# Native compiler for 64-bit helper tools. Keep this separate from CC because
+# SLSsteam itself is normally built with -m32 / i686 toolchains.
+HOST_CC ?= gcc
 
 include deps.mk
 
@@ -139,7 +142,7 @@ bin/pattern_smoke: tools/pattern_smoke/smoke.cpp src/memhlp_pure.cpp src/memhlp.
 pattern_smoke: bin/pattern_smoke
 	./bin/pattern_smoke
 
-audit-libs: bin/SLSsteam.so bin/library-inject.so tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber
+audit-libs: bin/SLSsteam.so bin/library-inject.so bin/sls_proton_inject.so tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber
 
 # Fetch + verify + unpack Lua sources on first build. Network is needed only
 # here; the Nix build pre-stages the tree + this stamp (its sandbox has no net).
@@ -293,12 +296,12 @@ bin/library-inject.so: tools/library-inject/main.cpp tools/library-inject/build.
 	@mkdir -p bin
 	cp tools/library-inject/library-inject.so bin/library-inject.so
 
-# Proton DLL injection helpers (LD_PRELOAD into Wine).
-# 64-bit: must be built OUTSIDE the 32-bit nix-shell (use system gcc).
-# 32-bit: built inside nix-shell alongside SLSsteam.so.
-bin/sls_proton_inject32.so: tools/proton_inject/inject.c
+# Proton DLL injection helper (LD_PRELOAD into 64-bit Wine).
+# Build with a native 64-bit compiler; the helper currently does not support
+# 32-bit Wine processes, so there is intentionally no i386 helper target.
+bin/sls_proton_inject.so: tools/proton_inject/inject.c
 	@mkdir -p bin
-	$(CC) -m32 -shared -fPIC -O2 -Wall -Wextra -o $@ $< -ldl
+	$(HOST_CC) -shared -fPIC -O2 -Wall -Wextra -Wpedantic -o $@ $<
 
 tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber:
 	sh tools/ticket-grabber/build.sh
@@ -329,6 +332,7 @@ zips: rebuild
 		"zips/SLSsteam $(DATE).7z" \
 		"bin/SLSsteam.so" \
 		"bin/library-inject.so" \
+		"bin/sls_proton_inject.so" \
 		"setup.sh" \
 		"docs/LICENSE" \
 		"res/config.toml" \
@@ -339,6 +343,7 @@ zips: rebuild
 		"zips/SLSsteam $(DATE).zip" \
 		"bin/SLSsteam.so" \
 		"bin/library-inject.so" \
+		"bin/sls_proton_inject.so" \
 		"setup.sh" \
 		"docs/LICENSE" \
 		"res/config.toml" \

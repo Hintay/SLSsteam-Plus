@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <regex>
 #include <string>
 #include <unordered_set>
@@ -94,6 +95,23 @@ static const NewConfigEntry kNewConfigEntries[] = {
 	  "# Disable cloud saves for unlocked games. Set to false if using CloudRedirect or similar.\n"
 	  "DisableCloud = true\n" },
 
+	// --- Advanced ---
+	{ "ProtonInject", "Advanced",
+	  "# Inject a pre-compiled Windows DLL into Proton game processes.\n"
+	  "# Hooks NtCreateUserProcess via LD_PRELOAD and calls LdrLoadDll in\n"
+	  "# child processes to load the DLL. Only non-system processes\n"
+	  "# (outside \\windows\\) are injected.\n"
+	  "# Path: absolute Linux path to the DLL (Wine accesses it directly).\n"
+	  "# Apps: list of AppIds to inject into.\n"
+	  "# Requires sls_proton_inject.so next to SLSsteam.so.\n"
+	  "# Dir is optional: override where sls_proton_inject.so is searched.\n"
+	  "# Example:\n"
+	  "#   [ProtonInject]\n"
+	  "#   #Dir = \"/custom/path\"\n"
+	  "#   [[ProtonInject.Dlls]]\n"
+	  "#   Path = \"/home/deck/.config/SLSsteam/OnlineFix.dll\"\n"
+	  "#   Apps = [12345, 67890]\n" },
+
 	// --- Internal ---
 	{ "OnlinePatterns", "Internal",
 	  "# Fetch the latest patterns online (HTTPS) on startup to pick up updated\n"
@@ -157,10 +175,21 @@ static bool configHasKey(const std::string& content, const char* key)
 		const size_t lineEnd = content.find('\n', pos);
 		const size_t len = (lineEnd == std::string::npos ? content.size() : lineEnd) - pos;
 		const std::string_view line(content.data() + pos, len);
+		std::string_view normalized = line;
+		while (!normalized.empty() && (normalized.front() == ' ' || normalized.front() == '\t'))
+			normalized.remove_prefix(1);
+		if (!normalized.empty() && normalized.front() == '#')
+		{
+			normalized.remove_prefix(1);
+			while (!normalized.empty() && (normalized.front() == ' ' || normalized.front() == '\t'))
+				normalized.remove_prefix(1);
+		}
 
 		if (line.starts_with(active) || line.starts_with(activeEq) ||
 		    line.starts_with(hash)   || line.starts_with(hashSp)   ||
-		    line.starts_with(section) || line.starts_with(hashSec) || line.starts_with(hashSpSec))
+		    line.starts_with(section) || line.starts_with(hashSec) || line.starts_with(hashSpSec) ||
+		    normalized.starts_with(active) || normalized.starts_with(activeEq) ||
+		    normalized.starts_with(section))
 			return true;
 
 		pos = (lineEnd == std::string::npos) ? content.size() : lineEnd + 1;
@@ -1096,8 +1125,13 @@ bool CConfig::loadSettings()
 					entry.path = (*tbl)["Path"].value_or(std::string(""));
 					if (auto* apps = (*tbl)["Apps"].as_array()) {
 						for (const auto& a : *apps) {
-							if (auto v = a.value<int64_t>())
-								entry.apps.emplace(static_cast<uint32_t>(*v));
+							if (auto v = a.value<int64_t>()) {
+								if (*v >= 0 && *v <= std::numeric_limits<uint32_t>::max())
+									entry.apps.emplace(static_cast<uint32_t>(*v));
+								else
+									__parseError = true;
+							}
+							else { __parseError = true; }
 						}
 					}
 					if (!entry.path.empty() && !entry.apps.empty()) {

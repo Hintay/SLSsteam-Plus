@@ -108,10 +108,7 @@ jobs:
           # then compile the project objects in parallel. Avoids over-subscribing
           # cores during the heavy dep builds while still parallelizing the .cpp.
           make deps
-          make -j"$(nproc)" bin/SLSsteam.so bin/library-inject.so
-          # 64-bit Proton DLL injection helper (plain C, no deps, no -m32)
-          gcc -shared -fPIC -O2 -Wall -Wextra -Wpedantic \
-            -o bin/sls_proton_inject.so tools/proton_inject/inject.c
+          make -j"$(nproc)" bin/SLSsteam.so bin/library-inject.so bin/sls_proton_inject.so
 
       - name: Stage artifacts
         run: |

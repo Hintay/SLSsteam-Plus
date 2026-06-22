@@ -85,6 +85,15 @@ typedef size_t   SIZE_T;
 #define PAGE_EXECUTE_READWRITE 0x40
 #define THREAD_ALL_ACCESS 0x1FFFFF
 
+/* x86_64 Wine layout offsets used only for filtering child processes. */
+#define ProcessBasicInformation 0
+#define PBI_PEB_BASE_OFFSET 0x08
+#define PEB_PROCESS_PARAMETERS_OFFSET 0x20
+#define RTL_USER_PROC_PARAMS_IMAGE_PATH_OFFSET 0x60
+#define UNICODE_STRING_LENGTH_OFFSET 0x00
+#define UNICODE_STRING_BUFFER_OFFSET 0x08
+#define MAX_IMAGE_PATH_CHARS 512
+
 typedef struct { ULONG Length; HANDLE RootDirectory; void *ObjectName;
                  ULONG Attributes; void *SecurityDescriptor; void *SecurityQualityOfService; } OBJECT_ATTRIBUTES;
 
@@ -158,6 +167,25 @@ static void dbg_raw(const char *msg)
  * `needle` must appear in the mapping path. Returns first readable segment
  * (lowest address = module base). Works for both ELF .so and PE .dll. */
 #define MAPS_BUF_SIZE (256 * 1024)
+#define FALLBACK_PAGE_SIZE 4096UL
+
+static size_t get_page_size(void)
+{
+    long page_size = sysconf(_SC_PAGESIZE);
+    return page_size > 0 ? (size_t)page_size : FALLBACK_PAGE_SIZE;
+}
+
+static uintptr_t align_page_down(uintptr_t address, size_t page_size)
+{
+    return address & ~((uintptr_t)page_size - 1);
+}
+
+static size_t page_span_len(uintptr_t address, size_t len, size_t page_size)
+{
+    uintptr_t start = align_page_down(address, page_size);
+    uintptr_t end = align_page_down(address + len - 1, page_size) + page_size;
+    return (size_t)(end - start);
+}
 
 static unsigned long find_module_base(const char *needle)
 {
@@ -351,27 +379,32 @@ static uint32_t find_pe_export_rva(const char *filepath, const char *func_name)
     uint8_t expdir[40];
     if (raw_read(fd, expdir, 40) != 40) { raw_munmap(sec, sec_sz); raw_close(fd); return 0; }
 
+    uint32_t num_funcs = *(uint32_t *)(expdir + 0x14);
     uint32_t num_names = *(uint32_t *)(expdir + 0x18);
     uint32_t addr_rva  = *(uint32_t *)(expdir + 0x1C);
     uint32_t name_rva  = *(uint32_t *)(expdir + 0x20);
     uint32_t ord_rva   = *(uint32_t *)(expdir + 0x24);
+    if (!num_funcs || !num_names) { raw_munmap(sec, sec_sz); raw_close(fd); return 0; }
 
-    size_t tbl_sz = num_names * (4 + 4 + 2);
-    void *tbl = raw_mmap(NULL, tbl_sz + 4096, PROT_READ|PROT_WRITE,
+    size_t addr_sz = (size_t)num_funcs * 4;
+    size_t name_sz = (size_t)num_names * 4;
+    size_t ord_sz = (size_t)num_names * 2;
+    size_t tbl_sz = addr_sz + name_sz + ord_sz;
+    void *tbl = raw_mmap(NULL, tbl_sz, PROT_READ|PROT_WRITE,
                          MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (tbl == MAP_FAILED) { raw_munmap(sec, sec_sz); raw_close(fd); return 0; }
 
     uint32_t *addrs = tbl;
-    uint32_t *names = (uint32_t *)((char*)tbl + num_names * 4);
-    uint16_t *ords  = (uint16_t *)((char*)tbl + num_names * 8);
+    uint32_t *names = (uint32_t *)((char*)tbl + addr_sz);
+    uint16_t *ords  = (uint16_t *)((char*)tbl + addr_sz + name_sz);
 
     uint32_t fo;
     fo = rva_to_offset(sec, nsections, addr_rva);
-    if (fo != (uint32_t)-1) { raw_lseek(fd, fo, SEEK_SET); raw_read(fd, addrs, num_names * 4); }
+    if (fo != (uint32_t)-1) { raw_lseek(fd, fo, SEEK_SET); raw_read(fd, addrs, addr_sz); }
     fo = rva_to_offset(sec, nsections, name_rva);
-    if (fo != (uint32_t)-1) { raw_lseek(fd, fo, SEEK_SET); raw_read(fd, names, num_names * 4); }
+    if (fo != (uint32_t)-1) { raw_lseek(fd, fo, SEEK_SET); raw_read(fd, names, name_sz); }
     fo = rva_to_offset(sec, nsections, ord_rva);
-    if (fo != (uint32_t)-1) { raw_lseek(fd, fo, SEEK_SET); raw_read(fd, ords, num_names * 2); }
+    if (fo != (uint32_t)-1) { raw_lseek(fd, fo, SEEK_SET); raw_read(fd, ords, ord_sz); }
 
     uint32_t result = 0;
     char name_buf[128];
@@ -383,6 +416,8 @@ static uint32_t find_pe_export_rva(const char *filepath, const char *func_name)
         if (nr <= 0) continue;
         name_buf[nr] = '\0';
         if (strcmp(name_buf, func_name) == 0) {
+            if (ords[i] >= num_funcs)
+                break;
             uint32_t fn_rva = addrs[ords[i]];
             if (fn_rva >= export_rva && fn_rva < export_rva + export_size)
                 break; /* forwarded */
@@ -391,7 +426,7 @@ static uint32_t find_pe_export_rva(const char *filepath, const char *func_name)
         }
     }
 
-    raw_munmap(tbl, tbl_sz + 4096);
+    raw_munmap(tbl, tbl_sz);
     raw_munmap(sec, sec_sz);
     raw_close(fd);
     return result;
@@ -401,7 +436,8 @@ static uint32_t find_pe_export_rva(const char *filepath, const char *func_name)
 
 static int detour_install(uintptr_t target, uintptr_t hook, uintptr_t *out_trampoline, size_t stolen)
 {
-    void *tramp = raw_mmap(NULL, 4096, PROT_READ|PROT_WRITE|PROT_EXEC,
+    const size_t page_size = get_page_size();
+    void *tramp = raw_mmap(NULL, page_size, PROT_READ|PROT_WRITE|PROT_EXEC,
                            MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (tramp == MAP_FAILED) return -1;
 
@@ -411,9 +447,10 @@ static int detour_install(uintptr_t target, uintptr_t hook, uintptr_t *out_tramp
     *(uint64_t *)(t + stolen + 2) = target + stolen;
     t[stolen+10] = 0xFF; t[stolen+11] = 0xE0;
 
-    uintptr_t page = target & ~0xFFFULL;
-    if (raw_mprotect((void *)page, 0x2000, PROT_READ|PROT_WRITE|PROT_EXEC) != 0) {
-        raw_munmap(tramp, 4096);
+    uintptr_t page = align_page_down(target, page_size);
+    size_t patch_span = page_span_len(target, stolen, page_size);
+    if (raw_mprotect((void *)page, patch_span, PROT_READ|PROT_WRITE|PROT_EXEC) != 0) {
+        raw_munmap(tramp, page_size);
         return -1;
     }
 
@@ -423,7 +460,7 @@ static int detour_install(uintptr_t target, uintptr_t hook, uintptr_t *out_tramp
     p[10] = 0xFF; p[11] = 0xE0;
     for (size_t i = 12; i < stolen; i++) p[i] = 0x90;
 
-    raw_mprotect((void *)page, 0x2000, PROT_READ|PROT_EXEC);
+    raw_mprotect((void *)page, patch_span, PROT_READ|PROT_EXEC);
 
     *out_trampoline = (uintptr_t)tramp;
     return 0;
@@ -662,27 +699,27 @@ static int should_inject_child(HANDLE hProcess)
 
     uint8_t pbi[48] = {0};
     ULONG retlen = 0;
-    if (pNtQueryInformationProcess(hProcess, 0, pbi, sizeof(pbi), &retlen) != STATUS_SUCCESS)
+    if (pNtQueryInformationProcess(hProcess, ProcessBasicInformation, pbi, sizeof(pbi), &retlen) != STATUS_SUCCESS)
         return 1;
 
-    uint64_t peb_addr = *(uint64_t *)(pbi + 8);
+    uint64_t peb_addr = *(uint64_t *)(pbi + PBI_PEB_BASE_OFFSET);
     if (!peb_addr) return 1;
 
-    /* PEB+0x20 = ProcessParameters (set before thread starts) */
+    /* PEB.ProcessParameters is set before the child thread starts. */
     uint64_t pp_addr = 0;
-    if (pNtReadVirtualMemory(hProcess, (const void *)(peb_addr + 0x20), &pp_addr, 8, NULL) != STATUS_SUCCESS || !pp_addr)
+    if (pNtReadVirtualMemory(hProcess, (const void *)(peb_addr + PEB_PROCESS_PARAMETERS_OFFSET), &pp_addr, sizeof(pp_addr), NULL) != STATUS_SUCCESS || !pp_addr)
         return 1;
 
-    /* RTL_USER_PROCESS_PARAMETERS+0x60 = ImagePathName (UNICODE_STRING, UTF-16) */
+    /* RTL_USER_PROCESS_PARAMETERS.ImagePathName is a UNICODE_STRING. */
     uint16_t img_len = 0;  /* bytes */
     uint64_t img_buf = 0;
-    pNtReadVirtualMemory(hProcess, (const void *)(pp_addr + 0x60), &img_len, 2, NULL);
-    pNtReadVirtualMemory(hProcess, (const void *)(pp_addr + 0x68), &img_buf, 8, NULL);
+    pNtReadVirtualMemory(hProcess, (const void *)(pp_addr + RTL_USER_PROC_PARAMS_IMAGE_PATH_OFFSET + UNICODE_STRING_LENGTH_OFFSET), &img_len, sizeof(img_len), NULL);
+    pNtReadVirtualMemory(hProcess, (const void *)(pp_addr + RTL_USER_PROC_PARAMS_IMAGE_PATH_OFFSET + UNICODE_STRING_BUFFER_OFFSET), &img_buf, sizeof(img_buf), NULL);
     if (!img_buf || img_len < 10) return 1;
 
     int nchars = img_len / 2;
-    if (nchars > 512) nchars = 512;
-    uint16_t path_buf[512];
+    if (nchars > MAX_IMAGE_PATH_CHARS) nchars = MAX_IMAGE_PATH_CHARS;
+    uint16_t path_buf[MAX_IMAGE_PATH_CHARS];
     if (pNtReadVirtualMemory(hProcess, (const void *)img_buf, path_buf, nchars * 2, NULL) != STATUS_SUCCESS)
         return 1;
 
