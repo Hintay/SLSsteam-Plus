@@ -82,11 +82,11 @@ pattern = "E8 ? ? ? ? E9 ? ? ? ? ? ? ? ? ? ? 8D 45 ? 89 45 ? EB"
 
 [Patterns.steamclient."CUser::MarkLicenseAsChanged"]
 follow = "None"
-pattern = "55 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 83 EC 2C 8B 74 24 40 8B 44 24 48 8B BE 18 1B 00 00 88 44 24 1C 8D 86 E8 1A 00 00"
+pattern = "55 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 83 EC 2C 8B 74 24 40 8B 44 24 48 8B BE ? 1B 00 00 88 44 24 1C 8D 86 ? 1A 00 00"
 
 [Patterns.steamclient."CUser::ProcessPendingLicenseUpdates"]
 follow = "None"
-pattern = "55 E8 ? ? ? ? 81 C5 ? ? ? ? 57 56 53 83 EC 0C 8B 7C 24 20 8B B7 D4 1B 00 00 83 EE 01 79 0F EB 5D"
+pattern = "55 E8 ? ? ? ? 81 C5 ? ? ? ? 57 56 53 83 EC 0C 8B 7C 24 20 8B B7 ? 1B 00 00 83 EE 01 79 0F EB 5D"
 
 [Patterns.steamclient."IClientAppManager::RunIPCFrame"]
 follow = "PrologueUpwards"
@@ -101,12 +101,12 @@ pattern = "58 5A FF 74 24 ? 56 E8 ? ? ? ? 83 C4 10 85 C0 74"
 [Patterns.steamclient."IClientApps::RunIPCFrame"]
 follow = "PrologueUpwards"
 prologue = "56 57 E5 89 55"
-pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D 39 9C 88 A6"
+pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D ? 9C 88 A6"
 
 [Patterns.steamclient."IClientRemoteStorage::RunIPCFrame"]
 follow = "PrologueUpwards"
 prologue = "56 57 E5 89 55"
-pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D 6E E8 2F 87"
+pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D ? E8 2F 87"
 
 [Patterns.steamclient."IClientUser::RunIPCFrame"]
 follow = "PrologueUpwards"
@@ -139,17 +139,17 @@ pattern = "E8 ? ? ? ? 89 C3 83 C4 20 8B ? ? ? ? ? 8B"
 [Patterns.steamclient."IClientUser::RequiresLegacyCDKey"]
 follow = "PrologueUpwards"
 prologue = "53 56 57 55"
-pattern = "75 ? 83 C4 1C 31 C0 5B 5E 5F 5D C3 ? ? ? ? ? 8B 44 24 ? 83 C4 1C 89 F9 89 F2 5B 5E 5F 5D 2D D8 18 00 00"
+pattern = "75 ? 83 C4 1C 31 C0 5B 5E 5F 5D C3 ? ? ? ? ? 8B 44 24 ? 83 C4 1C 89 F9 89 F2 5B 5E 5F 5D 2D ? 18 00 00"
 
 [Patterns.steamclient."IClientUGC::RunIPCFrame"]
 follow = "PrologueUpwards"
 prologue = "56 57 E5 89 55"
-pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D 67 0C D2 71"
+pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D ? 0C D2 71"
 
 [Patterns.steamclient."IClientUserStats::RunIPCFrame"]
 follow = "PrologueUpwards"
 prologue = "56 57 E5 89 55"
-pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D 89 65 6D 87"
+pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D ? 65 6D 87"
 
 [Patterns.steamclient."IClientUtils::RunIPCFrame"]
 follow = "PrologueUpwards"
@@ -169,12 +169,13 @@ pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C 8B 55 14 8B 75 0C 89
 [Patterns.steamclient."CConfigStore::SharedConfigWriteCallsite"]
 follow = "None"
 optional = true
-pattern = "8B 85 50 EF FF FF 83 C4 28 8B 80 50 3B 00 00 FF B5 9C EF FF FF FF B5 8C EF FF FF 53 6A 00 6A 07 FF B5 D4 EE FF FF FF 10 83 C4 20 83 F8 01"
+pattern = "8B 85 50 EF FF FF 83 C4 28 8B 80 ? 3B 00 00 FF B5 9C EF FF FF FF B5 8C EF FF FF 53 6A 00 6A 07 FF B5 D4 EE FF FF FF 10"
 
 [Patterns.steamclient."CConfigStore::WriteVdfFile"]
-follow = "None"
+follow = "PrologueUpwards"
+prologue = "53 56 57 55"
 optional = true
-pattern = "55 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 81 EC EC 00 00 00 65 8B 0D 14 00 00 00 89 8C 24 DC 00 00 00 31 C9 8B B4 24 14 01 00 00 8B 94 24 00 01 00 00 8B 84 24 0C 01 00 00"
+pattern = "65 8B 0D 14 00 00 00 89 8C 24 DC 00 00 00 31 C9 8B B4 24 14 01 00 00"
 
 [Patterns.steamclient."IClientRemoteStorage::SetCloudEnabledForApp"]
 follow = "None"
