@@ -213,23 +213,23 @@ follow = "None"
 pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C 8B 5D 10 8B 75 0C 89 45 D4 8B 80 E0 09 00 00 85 DB 0F 94 C1"
 
 [IpcHashes.IClientAppManager]
-BIsDlcEnabled = 0x143D4543
+BIsDlcEnabled = { current = 0x143D4541, 1781041600 = 0x143D4543 }
 GetAppInstallState = 0xEAF26182
-GetUpdateInfo = 0x27B7A57D
+GetUpdateInfo = { current = 0x27B7A573, 1781041600 = 0x27B7A57D }
 InstallApp = 0xDD9AF17B
-IsAppDlcInstalled = 0xCDBD8C0F
-LaunchApp = 0x0F248F79
+IsAppDlcInstalled = { current = 0xCDBD8C71, 1781041600 = 0xCDBD8C0F }
+LaunchApp = { current = 0x04BABDC2, 1781041600 = 0x0F248F79 }
 
 [IpcHashes.IClientApps]
 GetAppData = 0x87D25D33
 GetAppDataSection = 0x53CE8E2E
 GetAppType = 0xDBD7CF03
-GetDLCCount = 0x6EFFB356
-GetDLCDataByIndex = 0xA6889C39
+GetDLCCount = { current = 0x6EFFB354, 1781041600 = 0x6EFFB356 }
+GetDLCDataByIndex = { current = 0xA6889C37, 1781041600 = 0xA6889C39 }
 RequestAppInfoUpdate = 0xAD30CD4B
 
 [IpcHashes.IClientRemoteStorage]
-IsCloudEnabledForApp = 0x88A72792
+IsCloudEnabledForApp = { current = 0x8712DD4A, 1781041600 = 0x88A72792 }
 SetCloudEnabledForApp = 0x2EAADA14
 
 [IpcHashes.IClientUser]
