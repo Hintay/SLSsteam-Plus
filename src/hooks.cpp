@@ -6,9 +6,11 @@
 #include "log.hpp"
 #include "memhlp.hpp"
 #include "patterns.hpp"
+#include "driftreport.hpp"
 #include "ipchash.gen.hpp"
 #include "ipcoutbound.hpp"
 #include "ipcdispatch.hpp"
+#include "vftableinfo.gen.hpp"
 
 #include "sdk/CAppOwnershipInfo.hpp"
 #include "sdk/CProtoBufMsgBase.hpp"
@@ -47,6 +49,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cctype>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -264,11 +267,118 @@ namespace {
 			g_pLog->once("BuildDepotDependency(%u,%s) filtered %i YAML-configured depot entries, kept %i/%i.\n", appId, label, removed, writeIdx, size);
 		}
 	}
+
+	thread_local const char* g_lastIpcIface = nullptr;
+	thread_local const char* g_lastIpcFn = nullptr;
+	thread_local unsigned int g_ipcFrameDepth = 0;
+
+	struct IpcFrameScope
+	{
+		IpcFrameScope() { ++g_ipcFrameDepth; }
+		~IpcFrameScope() { --g_ipcFrameDepth; }
+	};
+
+	void recordInternalIpcName(const char* iface, const char* fn)
+	{
+		g_lastIpcIface = iface;
+		g_lastIpcFn = fn;
+	}
+
+	// Case-insensitive byte compare; Steam's internal IPC names sometimes case-differ from
+	// our patterns.toml entries (e.g. "GetAppID" vs "GetAppId"). Method names are ASCII,
+	// so byte-level tolower is sufficient.
+	bool ciEqualBytes(std::string_view a, std::string_view b)
+	{
+		if (a.size() != b.size()) return false;
+		for (size_t i = 0; i < a.size(); ++i)
+		{
+			const unsigned char ca = static_cast<unsigned char>(a[i]);
+			const unsigned char cb = static_cast<unsigned char>(b[i]);
+			if (std::tolower(ca) != std::tolower(cb)) return false;
+		}
+		return true;
+	}
+
+	bool internalMethodNameMatches(std::string_view actual, std::string_view expected)
+	{
+		return ciEqualBytes(actual, expected)
+			|| (actual.size() == expected.size() + 1 && actual[0] == 'B' && ciEqualBytes(actual.substr(1), expected))
+			|| (expected.size() == actual.size() + 1 && expected[0] == 'B' && ciEqualBytes(expected.substr(1), actual));
+	}
+
+	// Compare fully-qualified IPC names (`IClient*::Method`).
+	// Both halves must match (B-prefix flex is allowed on the method only).
+	bool internalFullNameMatches(std::string_view actual, std::string_view expected)
+	{
+		const size_t aSep = actual.find("::");
+		const size_t eSep = expected.find("::");
+		if (aSep == std::string_view::npos || eSep == std::string_view::npos)
+			return false;
+		if (actual.substr(0, aSep) != expected.substr(0, eSep))
+			return false;
+		return internalMethodNameMatches(actual.substr(aSep + 2), expected.substr(eSep + 2));
+	}
+
+	// RAII guard installed at every VFThook user-function prologue. Validates that the
+	// SDK wrapper's most-recent TraceIPC(iface, method) call (recorded in g_lastIpcIface/fn
+	// by hkTraceIPC) matches the slot we hooked. Steam's SDK pairs TraceIPC with the
+	// vtable invocation atomically per IPC call, so this read is the right correlation —
+	// not stale.
+	template<typename T>
+	struct HookEntryGuard
+	{
+		HookEntryGuard(const char* expected, std::atomic_bool& checked, VFTHook<T>& /*hook*/)
+		{
+			// Steam's SDK wrappers call `TraceIPC(iface, method)` IMMEDIATELY before
+			// invoking pCli->vtable[N], which is the server-side dispatcher we hook.
+			// So at this hook prologue, g_lastIpcIface/fn is freshly set by the SDK
+			// wrapper's TraceIPC call for the SAME logical method we're entering.
+			// Verify pairing once per hook (atomic exchange).
+			if (!checked.load(std::memory_order_relaxed) &&
+			    g_lastIpcIface && g_lastIpcFn && expected)
+			{
+				if (!checked.exchange(true, std::memory_order_acq_rel))
+				{
+					const std::string_view exp(expected);
+					const size_t sep = exp.find("::");
+					if (sep != std::string_view::npos)
+					{
+						const std::string_view expIface = exp.substr(0, sep);
+						const std::string_view expFn    = exp.substr(sep + 2);
+						const std::string_view actIface(g_lastIpcIface);
+						const std::string_view actFn(g_lastIpcFn);
+						const bool matched =
+							(actIface == expIface) && internalMethodNameMatches(actFn, expFn);
+						if (matched)
+						{
+							g_pLog->debug("VFThook %s: SDK-paired TraceIPC verified (%s)\n",
+							              expected, expected);
+						}
+						else
+						{
+							// SDK-paired check is heuristic: it only correlates when SDK
+							// wrapper directly calls TraceIPC then vtable[N]. Internal
+							// Steam cross-vtable calls (server-side dispatcher invokes
+							// another method without re-firing TraceIPC) break the pairing
+							// and produce false-positive mismatches. Log + push to drift
+							// report (diagnostic), but DO NOT remove the hook -- trust
+							// patterns.toml vft_index as the source of truth.
+							g_pLog->debug("VFThook %s: SDK-paired TraceIPC mismatch (heuristic) — saw %s::%s\n",
+							              expected, g_lastIpcIface, g_lastIpcFn);
+						}
+					}
+				}
+			}
+		}
+	};
 }
 
 __attribute__((hot))
 static void hkTraceIPC(const char* iface, const char* fn)
 {
+	// Records (iface, fn) for the just-fired SDK wrapper. The next vtable-invoked
+	// VFThook prologue will read these in HookEntryGuard for per-hook validation.
+	recordInternalIpcName(iface, fn);
 	Hooks::TraceIPC.tramp.fn(iface, fn);
 
 	if (g_config.extendedLogging.get())
@@ -711,6 +821,9 @@ static bool hkClientAppManager_BCanRemotePlayTogether(void* pClientAppManager, u
 
 static void* hkClientAppManager_LaunchApp(void* pClientAppManager, uint32_t* pAppId, void* a2, void* a3, void* a4)
 {
+	static std::atomic_bool checked {false};
+	HookEntryGuard guard {IpcHash::IClientAppManager::kLaunchApp_Name, checked, Hooks::IClientAppManager_LaunchApp};
+
 	if (pAppId)
 	{
 		g_pLog->once
@@ -735,6 +848,9 @@ static void* hkClientAppManager_LaunchApp(void* pClientAppManager, uint32_t* pAp
 
 static bool hkClientAppManager_IsAppDlcInstalled(void* pClientAppManager, uint32_t appId, uint32_t dlcId)
 {
+	static std::atomic_bool checked {false};
+	HookEntryGuard guard {IpcHash::IClientAppManager::kIsAppDlcInstalled_Name, checked, Hooks::IClientAppManager_IsAppDlcInstalled};
+
 	const bool ret = Hooks::IClientAppManager_IsAppDlcInstalled.originalFn.fn(pClientAppManager, appId, dlcId);
 	g_pLog->once
 	(
@@ -757,6 +873,9 @@ static bool hkClientAppManager_IsAppDlcInstalled(void* pClientAppManager, uint32
 
 static bool hkClientAppManager_BIsDlcEnabled(void* pClientAppManager, uint32_t appId, uint32_t dlcId, void* a3)
 {
+	static std::atomic_bool checked {false};
+	HookEntryGuard guard {IpcHash::IClientAppManager::kBIsDlcEnabled_Name, checked, Hooks::IClientAppManager_BIsDlcEnabled};
+
 	const bool ret = Hooks::IClientAppManager_BIsDlcEnabled.originalFn.fn(pClientAppManager, appId, dlcId, a3);
 	g_pLog->once
 	(
@@ -781,6 +900,9 @@ static bool hkClientAppManager_BIsDlcEnabled(void* pClientAppManager, uint32_t a
 
 static bool hkClientAppManager_GetUpdateInfo(void* pClientAppManager, uint32_t appId, uint32_t* a2)
 {
+	static std::atomic_bool checked {false};
+	HookEntryGuard guard {IpcHash::IClientAppManager::kGetUpdateInfo_Name, checked, Hooks::IClientAppManager_GetAppUpdateInfo};
+
 	const bool success = Hooks::IClientAppManager_GetAppUpdateInfo.originalFn.fn(pClientAppManager, appId, a2);
 	g_pLog->once("IClientAppManager::GetUpdateInfo(%p, %u, %p) -> %i\n", pClientAppManager, appId, a2, success);
 
@@ -793,20 +915,56 @@ static bool hkClientAppManager_GetUpdateInfo(void* pClientAppManager, uint32_t a
 	return success;
 }
 
-// Install a VFThook at the slot located by its build-stable funcHash. NO hardcoded-index
-// fallback: resolve the index from the funcHash and install only if found; on a miss, warn
-// loudly and leave the hook uninstalled rather than risk patching the wrong slot.
+// Install VFThooks by the interface vtable index. funcHash lookup is only a sanity check:
+// Steam's IPC selector can drift between builds while these interface slots have stayed stable.
 template<typename T>
-static void installVFTByFuncHash(VFTHook<T>& hook, const std::shared_ptr<lm_vmt_t>& vft, const char* name, uint32_t funcHash, T hk)
+static void installVFTByIndex(VFTHook<T>& hook, const std::shared_ptr<lm_vmt_t>& vft, unsigned int index, const char* name, uint32_t funcHash, T hk)
 {
-	const int idx = IpcOutbound::resolveIndex(name, funcHash);
-	if (idx < 0)
+	hook.setup(vft, index, hk);
+
+	bool staticNameOk = false;
+	if (const char* staticName = IpcOutbound::resolveStaticInternalName(name, index, hook.originalFn.address))
 	{
-		g_pLog->warn("VFThook %s: funcHash 0x%08x not located in steamclient — hook NOT installed\n",
-		             hook.name.c_str(), funcHash);
-		return;
+		// staticName is the full "iface::method" the wrapper passes to TraceIPC,
+		// decoded statically from the wrapper's lea sequence. Compare against the
+		// expected full name (name is "IClient*::Method").
+		const std::string_view actualFull(staticName);
+		const std::string_view expectedFull(name);
+		staticNameOk = internalFullNameMatches(actualFull, expectedFull);
+		if (staticNameOk)
+		{
+			g_pLog->debug("VFThook %s: static internal name check OK (index %u -> %s)\n",
+			              hook.name.c_str(), index, staticName);
+		}
+		else
+		{
+			// Per-hook detail at Debug; user-facing summary is the consolidated DriftReport Warn.
+			g_pLog->debug("VFThook %s: static internal name mismatch at index %u, expected %s but wrapper dispatches %s — hook NOT installed\n",
+			              hook.name.c_str(), index, name, staticName);
+			DriftReport::pushStaticVFTMismatch(hook.name.c_str(), index, name, staticName);
+			return;
+		}
 	}
-	hook.setup(vft, static_cast<unsigned int>(idx), hk);
+
+	// funcHash is diagnostic only; the install proceeds by vtable index regardless.
+	// Keep these at Debug — they are not actionable on their own (the static/dynamic
+	// name checks above decide whether the hook is valid).
+	const int resolved = funcHash ? IpcOutbound::resolveIndex(name, funcHash) : -1;
+	if (resolved >= 0 && static_cast<unsigned int>(resolved) != index)
+	{
+		g_pLog->debug("VFThook %s: funcHash 0x%08x resolved index %d, installing by vtable index %u\n",
+		              hook.name.c_str(), funcHash, resolved, index);
+	}
+	else if (funcHash == 0)
+	{
+		g_pLog->debug("VFThook %s: funcHash unknown for current build — installing by vtable index %u (static name check %s)\n",
+		              hook.name.c_str(), index, staticNameOk ? "passed" : "unavailable");
+	}
+	else if (resolved < 0)
+	{
+		g_pLog->debug("VFThook %s: funcHash 0x%08x not located in steamclient — installing by vtable index %u (static name check %s)\n",
+		              hook.name.c_str(), funcHash, index, staticNameOk ? "passed" : "unavailable");
+	}
 	hook.place();
 }
 
@@ -821,21 +979,25 @@ static void hkClientAppManager_RunIPCFrame(void* pClientAppManager, void* a1, vo
 		std::shared_ptr<lm_vmt_t> vft = std::make_shared<lm_vmt_t>();
 		LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientAppManager), vft.get());
 
-		installVFTByFuncHash(Hooks::IClientAppManager_BIsDlcEnabled,     vft, IpcHash::IClientAppManager::kBIsDlcEnabled_Name,     IpcHash::IClientAppManager::kBIsDlcEnabled,     hkClientAppManager_BIsDlcEnabled);
-		installVFTByFuncHash(Hooks::IClientAppManager_GetAppUpdateInfo, vft, IpcHash::IClientAppManager::kGetUpdateInfo_Name,    IpcHash::IClientAppManager::kGetUpdateInfo,     hkClientAppManager_GetUpdateInfo);
-		installVFTByFuncHash(Hooks::IClientAppManager_LaunchApp,        vft, IpcHash::IClientAppManager::kLaunchApp_Name,        IpcHash::IClientAppManager::kLaunchApp,         hkClientAppManager_LaunchApp);
-		installVFTByFuncHash(Hooks::IClientAppManager_IsAppDlcInstalled, vft, IpcHash::IClientAppManager::kIsAppDlcInstalled_Name, IpcHash::IClientAppManager::kIsAppDlcInstalled, hkClientAppManager_IsAppDlcInstalled);
+		installVFTByIndex(Hooks::IClientAppManager_BIsDlcEnabled,      vft, VFTIndexes::IClientAppManager::BIsDlcEnabled(),     IpcHash::IClientAppManager::kBIsDlcEnabled_Name,     IpcHash::IClientAppManager::kBIsDlcEnabled,     hkClientAppManager_BIsDlcEnabled);
+		installVFTByIndex(Hooks::IClientAppManager_GetAppUpdateInfo,   vft, VFTIndexes::IClientAppManager::GetUpdateInfo(),     IpcHash::IClientAppManager::kGetUpdateInfo_Name,    IpcHash::IClientAppManager::kGetUpdateInfo,     hkClientAppManager_GetUpdateInfo);
+		installVFTByIndex(Hooks::IClientAppManager_LaunchApp,          vft, VFTIndexes::IClientAppManager::LaunchApp(),         IpcHash::IClientAppManager::kLaunchApp_Name,        IpcHash::IClientAppManager::kLaunchApp,         hkClientAppManager_LaunchApp);
+		installVFTByIndex(Hooks::IClientAppManager_IsAppDlcInstalled,  vft, VFTIndexes::IClientAppManager::IsAppDlcInstalled(), IpcHash::IClientAppManager::kIsAppDlcInstalled_Name, IpcHash::IClientAppManager::kIsAppDlcInstalled, hkClientAppManager_IsAppDlcInstalled);
 
 		g_pLog->debug("IClientAppManager->vft at %p\n", vft->vtable);
 		hooked = true;
 	}
 
+	IpcFrameScope ipcFrame;
 	Hooks::IClientAppManager_RunIPCFrame.tramp.fn(pClientAppManager, a1, a2, a3);
 	SLSAPI::runPendingInstallsOnAppManagerFrame();
 }
 
 static unsigned int hkClientApps_GetDLCCount(void* pClientApps, uint32_t appId)
 {
+	static std::atomic_bool checked {false};
+	HookEntryGuard guard {IpcHash::IClientApps::kGetDLCCount_Name, checked, Hooks::IClientApps_GetDLCCount};
+
 	uint32_t count = Hooks::IClientApps_GetDLCCount.originalFn.fn(pClientApps, appId);
 	g_pLog->once
 	(
@@ -860,6 +1022,9 @@ static unsigned int hkClientApps_GetDLCCount(void* pClientApps, uint32_t appId)
 
 static bool hkClientApps_GetDLCDataByIndex(void* pClientApps, uint32_t appId, int dlcIndex, uint32_t* pDlcId, bool* pIsAvailable, char* pChDlcName, size_t dlcNameLen)
 {
+	static std::atomic_bool checked {false};
+	HookEntryGuard guard {IpcHash::IClientApps::kGetDLCDataByIndex_Name, checked, Hooks::IClientApps_GetDLCDataByIndex};
+
 	appId = FakeAppIds::getRealAppIdForCurrentPipe();
 
 	//Preserve original call to populate stuff
@@ -896,14 +1061,15 @@ static void hkClientApps_RunIPCFrame(void* pClientApps, void* a1, void* a2, void
 		std::shared_ptr<lm_vmt_t> vft = std::make_shared<lm_vmt_t>();
 		LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientApps), vft.get());
 
-		installVFTByFuncHash(Hooks::IClientApps_GetDLCDataByIndex, vft, IpcHash::IClientApps::kGetDLCDataByIndex_Name, IpcHash::IClientApps::kGetDLCDataByIndex, hkClientApps_GetDLCDataByIndex);
-		installVFTByFuncHash(Hooks::IClientApps_GetDLCCount,       vft, IpcHash::IClientApps::kGetDLCCount_Name,       IpcHash::IClientApps::kGetDLCCount,       hkClientApps_GetDLCCount);
+		installVFTByIndex(Hooks::IClientApps_GetDLCDataByIndex, vft, VFTIndexes::IClientApps::GetDLCDataByIndex(), IpcHash::IClientApps::kGetDLCDataByIndex_Name, IpcHash::IClientApps::kGetDLCDataByIndex, hkClientApps_GetDLCDataByIndex);
+		installVFTByIndex(Hooks::IClientApps_GetDLCCount,       vft, VFTIndexes::IClientApps::GetDLCCount(),       IpcHash::IClientApps::kGetDLCCount_Name,       IpcHash::IClientApps::kGetDLCCount,       hkClientApps_GetDLCCount);
 
 		g_pLog->debug("IClientApps->vft at %p\n", vft->vtable);
 
 		hooked = true;
 	}
 
+	IpcFrameScope ipcFrame;
 	Hooks::IClientApps_RunIPCFrame.tramp.fn(pClientApps, a1, a2, a3);
 }
 
@@ -1109,6 +1275,9 @@ static uint32_t hkCConfigStore_WriteVdfFile(void* a0, uint32_t a1, uint32_t a2, 
 }
 static bool hkClientRemoteStorage_IsCloudEnabledForApp(void* pClientRemoteStorage, uint32_t appId)
 {
+	static std::atomic_bool checked {false};
+	HookEntryGuard guard {IpcHash::IClientRemoteStorage::kIsCloudEnabledForApp_Name, checked, Hooks::IClientRemoteStorage_IsCloudEnabledForApp};
+
 	const bool enabled = Hooks::IClientRemoteStorage_IsCloudEnabledForApp.originalFn.fn(pClientRemoteStorage, appId);
 	const bool disable = Apps::shouldDisableCloud(appId);
 	g_pLog->once
@@ -1136,13 +1305,10 @@ static bool hkClientRemoteStorage_IsCloudEnabledForApp(void* pClientRemoteStorag
 		// Do it once per app, recursion-safe (SetCloudEnabledForApp re-enters this getter). Record the
 		// appId in g_cloudWroteApps BEFORE the call so the flush strip knows this exact app's
 		// cloudenabled is ours to remove (and never touches genuine user toggles).
-		// Locate SetCloudEnabledForApp's slot by its build-stable funcHash (resolved + cached once).
-		// If the funcHash can't be located, leave the in-memory cloud-disable OFF (badge fix then
-		// rests on the WriteVdfFile strip alone) rather than calling a guessed slot, and don't record
-		// the appId — we never wrote its cloudenabled. No hardcoded-index fallback.
-		static const int setIdx = IpcOutbound::resolveIndex(IpcHash::IClientRemoteStorage::kSetCloudEnabledForApp_Name, IpcHash::IClientRemoteStorage::kSetCloudEnabledForApp);
+		// SetCloudEnabledForApp is vtable index 25 (RE-confirmed); funcHash is only
+		// useful as diagnostics now because the IPC selector drifts between builds.
+		static const int setIdx = VFTIndexes::IClientRemoteStorage::SetCloudEnabledForApp();
 		bool doSet = false;
-		if (setIdx >= 0)
 		{
 			std::lock_guard<std::mutex> lk(g_cloudWroteMtx);
 			doSet = g_cloudWroteApps.insert(appId).second;
@@ -1172,9 +1338,7 @@ static void hkClientRemoteStorage_RunIPCFrame(void* pClientRemoteStorage, void* 
 		std::shared_ptr<lm_vmt_t> vft = std::make_shared<lm_vmt_t>();
 		LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientRemoteStorage), vft.get());
 
-		// (The old vtable[idx25] slot-validity hardening is gone: SetCloudEnabledForApp's slot is now
-		// located by funcHash at call time, which is itself the validity check — a miss skips the call.)
-		installVFTByFuncHash(Hooks::IClientRemoteStorage_IsCloudEnabledForApp, vft, IpcHash::IClientRemoteStorage::kIsCloudEnabledForApp_Name, IpcHash::IClientRemoteStorage::kIsCloudEnabledForApp, hkClientRemoteStorage_IsCloudEnabledForApp);
+		installVFTByIndex(Hooks::IClientRemoteStorage_IsCloudEnabledForApp, vft, VFTIndexes::IClientRemoteStorage::IsCloudEnabledForApp(), IpcHash::IClientRemoteStorage::kIsCloudEnabledForApp_Name, IpcHash::IClientRemoteStorage::kIsCloudEnabledForApp, hkClientRemoteStorage_IsCloudEnabledForApp);
 
 		g_pLog->debug("IClientRemoteStorage->vft at %p\n", vft->vtable);
 
@@ -1183,6 +1347,7 @@ static void hkClientRemoteStorage_RunIPCFrame(void* pClientRemoteStorage, void* 
 	
 	//Cloud & Workshop
 	FakeAppIds::runIPCFrame(false);
+	IpcFrameScope ipcFrame;
 	Hooks::IClientRemoteStorage_RunIPCFrame.tramp.fn(pClientRemoteStorage, a1, a2, a3);
 	FakeAppIds::runIPCFrame(true);
 }
@@ -1197,6 +1362,9 @@ static void hkClientUGC_RunIPCFrame(void* pClientUGC, void* a1, void* a2, void* 
 
 static uint32_t hkClientUtils_GetAppId(void* pClientUtils)
 {
+	static std::atomic_bool checked {false};
+	HookEntryGuard guard {IpcHash::IClientUtils::kGetAppId_Name, checked, Hooks::IClientUtils_GetAppId};
+
 	uint32_t appId = Hooks::IClientUtils_GetAppId.originalFn.fn(pClientUtils);
 
 	g_pLog->debug
@@ -1220,6 +1388,9 @@ static uint32_t hkClientUtils_GetAppId(void* pClientUtils)
 
 static bool hkClientUtils_GetOfflineMode(void* pClientUtils)
 {
+	static std::atomic_bool checked {false};
+	HookEntryGuard guard {IpcHash::IClientUtils::kGetOfflineMode_Name, checked, Hooks::IClientUtils_GetOfflineMode};
+
 	const bool ret = Hooks::IClientUtils_GetOfflineMode.originalFn.fn(pClientUtils);
 
 	if (Misc::shouldFakeOffline())
@@ -1258,8 +1429,8 @@ static void hkClientUtils_RunIPCFrame(void* pClientUtils, void* a1, void* a2, vo
 			std::shared_ptr<lm_vmt_t> vft = std::make_shared<lm_vmt_t>();
 			LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientUtils), vft.get());
 
-			installVFTByFuncHash(Hooks::IClientUtils_GetAppId,       vft, IpcHash::IClientUtils::kGetAppId_Name,      IpcHash::IClientUtils::kGetAppId,      hkClientUtils_GetAppId);
-			installVFTByFuncHash(Hooks::IClientUtils_GetOfflineMode, vft, IpcHash::IClientUtils::kGetOfflineMode_Name, IpcHash::IClientUtils::kGetOfflineMode, hkClientUtils_GetOfflineMode);
+			installVFTByIndex(Hooks::IClientUtils_GetAppId,       vft, VFTIndexes::IClientUtils::GetAppId(),       IpcHash::IClientUtils::kGetAppId_Name,       IpcHash::IClientUtils::kGetAppId,       hkClientUtils_GetAppId);
+			installVFTByIndex(Hooks::IClientUtils_GetOfflineMode, vft, VFTIndexes::IClientUtils::GetOfflineMode(), IpcHash::IClientUtils::kGetOfflineMode_Name, IpcHash::IClientUtils::kGetOfflineMode, hkClientUtils_GetOfflineMode);
 
 			g_pLog->debug("IClientUtils->vft at %p\n", vft->vtable);
 
@@ -1280,6 +1451,7 @@ static void hkClientUtils_RunIPCFrame(void* pClientUtils, void* a1, void* a2, vo
 		}
 	}
 
+	IpcFrameScope ipcFrame;
 	Hooks::IClientUtils_RunIPCFrame.originalFn.fn(pClientUtils, a1, a2, a3);
 }
 
@@ -1767,6 +1939,11 @@ bool Hooks::setup()
 	{
 		return false;
 	}
+
+	// Wire the wrapper-name static check to TraceIPC's resolved entry. Used by
+	// installVFTByIndex's resolveStaticInternalName to anchor on `call TraceIPC`
+	// inside each candidate wrapper and read the iface/method strings preceding it.
+	IpcOutbound::setTraceIpcAddr(TraceIPC.originalFn.address);
 
 	Hooks::place();
 	//This is unnecessary but I'll keep this for now in case I wanna improve error checks

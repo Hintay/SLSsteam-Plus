@@ -97,7 +97,7 @@ LogLevel = 2
 # --- Internal (default values are optimal for most users) ---
 
 # Fetch the latest patterns online (HTTPS) on startup to pick up updated
-# signatures and IpcHashes for new Steam builds without re-downloading SLSsteam.
+# signatures and IPC method hashes for new Steam builds without re-downloading SLSsteam.
 #OnlinePatterns = true
 
 # Inject added apps into Steam's live package table (pkg0) and re-evaluate

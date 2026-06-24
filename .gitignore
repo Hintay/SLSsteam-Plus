@@ -38,3 +38,4 @@ docs/superpowers/
 *.gen
 *.gen.*
 /src/.patterns-gen.stamp
+tools/__pycache__/

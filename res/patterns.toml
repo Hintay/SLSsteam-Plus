@@ -89,9 +89,9 @@ follow = "None"
 pattern = "55 E8 ? ? ? ? 81 C5 ? ? ? ? 57 56 53 83 EC 0C 8B 7C 24 20 8B B7 ? 1B 00 00 83 EE 01 79 0F EB 5D"
 
 [Patterns.steamclient."IClientAppManager::RunIPCFrame"]
-follow = "PrologueUpwards"
-prologue = "56 57 E5 89 55"
-pattern = "FF B5 ? ? ? ? 50 8D 86 ? ? ? ? 68 90 09 00 00"
+follow = "None"
+# Entry prologue + unique stack-frame size: sub esp, 0x780
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 80 07 00 00"
 
 [Patterns.steamclient."IClientAppManager::BCanRemotePlayTogether"]
 follow = "PrologueUpwards"
@@ -99,19 +99,21 @@ prologue = "E8 53 56 57"
 pattern = "58 5A FF 74 24 ? 56 E8 ? ? ? ? 83 C4 10 85 C0 74"
 
 [Patterns.steamclient."IClientApps::RunIPCFrame"]
-follow = "PrologueUpwards"
-prologue = "56 57 E5 89 55"
-pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D ? 9C 88 A6"
+follow = "None"
+# Entry prologue + sub esp,0x170 + one disp8 from body (sub esp,0x170 alone
+# matches 4 fns; the trailing `89 85 18 FF FF FF` (mov [ebp-0xE8], eax) makes
+# this unique to IClientApps's RunIPCFrame in the current build.
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 70 01 00 00 8B 45 08 8B 4D 0C 8B 7D 14 89 85 18 FF FF FF"
 
 [Patterns.steamclient."IClientRemoteStorage::RunIPCFrame"]
-follow = "PrologueUpwards"
-prologue = "56 57 E5 89 55"
-pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D ? E8 2F 87"
+follow = "None"
+# Entry prologue + unique sub esp, 0x560
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 60 05 00 00"
 
 [Patterns.steamclient."IClientUser::RunIPCFrame"]
-follow = "PrologueUpwards"
-prologue = "56 57 E5 89 55"
-pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D 10 A3 86 73"
+follow = "None"
+# Entry prologue + unique sub esp, 0x9F0
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC F0 09 00 00"
 
 [Patterns.steamclient."IClientUser::BLoggedOn"]
 follow = "Relative"
@@ -142,19 +144,19 @@ prologue = "53 56 57 55"
 pattern = "75 ? 83 C4 1C 31 C0 5B 5E 5F 5D C3 ? ? ? ? ? 8B 44 24 ? 83 C4 1C 89 F9 89 F2 5B 5E 5F 5D 2D ? 18 00 00"
 
 [Patterns.steamclient."IClientUGC::RunIPCFrame"]
-follow = "PrologueUpwards"
-prologue = "56 57 E5 89 55"
-pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D ? 0C D2 71"
+follow = "None"
+# Entry prologue + unique sub esp, 0x5480
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 80 54 00 00"
 
 [Patterns.steamclient."IClientUserStats::RunIPCFrame"]
-follow = "PrologueUpwards"
-prologue = "56 57 E5 89 55"
-pattern = "E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D ? 65 6D 87"
+follow = "None"
+# Entry prologue + unique sub esp, 0x2C0
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC C0 02 00 00"
 
 [Patterns.steamclient."IClientUtils::RunIPCFrame"]
-follow = "PrologueUpwards"
-prologue = "56 57 E5 89 55"
-pattern = "83 EC 08 89 F3 50 57 E8 ? ? ? ? 58 FF B5 ? ? ? ? E8 ? ? ? ? 58 8D 45"
+follow = "None"
+# Entry prologue + unique sub esp, 0x490
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 90 04 00 00"
 
 # Offset to IClientUtils::m_PipeIndex
 [Patterns.steamclient."IClientUtils::Offset_GetPipeIndex"]
@@ -212,29 +214,70 @@ pattern = "55 89 E5 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 81 EC 8C 00 00 00 8B 7D 08
 follow = "None"
 pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C 8B 5D 10 8B 75 0C 89 45 D4 8B 80 E0 09 00 00 85 DB 0F 94 C1"
 
-[IpcHashes.IClientAppManager]
-BIsDlcEnabled = { current = 0x143D4541, 1781041600 = 0x143D4543 }
-GetAppInstallState = 0xEAF26182
-GetUpdateInfo = { current = 0x27B7A573, 1781041600 = 0x27B7A57D }
-InstallApp = 0xDD9AF17B
-IsAppDlcInstalled = { current = 0xCDBD8C71, 1781041600 = 0xCDBD8C0F }
-LaunchApp = { current = 0x04BABDC2, 1781041600 = 0x0F248F79 }
+[IpcMethods.IClientAppManager.InstallApp]
+vft_index = 0
+func_hash = 0xDD9AF17B
 
-[IpcHashes.IClientApps]
-GetAppData = 0x87D25D33
-GetAppDataSection = 0x53CE8E2E
-GetAppType = 0xDBD7CF03
-GetDLCCount = { current = 0x6EFFB354, 1781041600 = 0x6EFFB356 }
-GetDLCDataByIndex = { current = 0xA6889C37, 1781041600 = 0xA6889C39 }
-RequestAppInfoUpdate = 0xAD30CD4B
+[IpcMethods.IClientAppManager.LaunchApp]
+vft_index = 2
+func_hash = { current = 0x04BABDC2, 1781041600 = 0x0F248F79 }
 
-[IpcHashes.IClientRemoteStorage]
-IsCloudEnabledForApp = { current = 0x8712DD4A, 1781041600 = 0x88A72792 }
-SetCloudEnabledForApp = 0x2EAADA14
+[IpcMethods.IClientAppManager.GetAppInstallState]
+vft_index = 4
+func_hash = 0xEAF26182
 
-[IpcHashes.IClientUser]
-GetSteamID = 0xD6FC3200
+[IpcMethods.IClientAppManager.IsAppDlcInstalled]
+vft_index = 9
+func_hash = { current = 0xCDBD8C71, 1781041600 = 0xCDBD8C0F }
 
-[IpcHashes.IClientUtils]
-GetAppId = 0x09607EC4
-GetOfflineMode = 0xD1D2D9CF
+[IpcMethods.IClientAppManager.BIsDlcEnabled]
+vft_index = 11
+func_hash = { current = 0x143D4541, 1781041600 = 0x143D4543 }
+
+[IpcMethods.IClientAppManager.GetUpdateInfo]
+vft_index = 20
+func_hash = { current = 0x27B7A573, 1781041600 = 0x27B7A57D }
+
+[IpcMethods.IClientApps.GetAppData]
+vft_index = 0
+func_hash = 0x87D25D33
+
+[IpcMethods.IClientApps.GetAppDataSection]
+vft_index = 5
+func_hash = 0x53CE8E2E
+
+[IpcMethods.IClientApps.RequestAppInfoUpdate]
+vft_index = 7
+func_hash = 0xAD30CD4B
+
+[IpcMethods.IClientApps.GetDLCCount]
+vft_index = 8
+func_hash = { current = 0x6EFFB354, 1781041600 = 0x6EFFB356 }
+
+[IpcMethods.IClientApps.GetDLCDataByIndex]
+vft_index = 9
+func_hash = { current = 0xA6889C37, 1781041600 = 0xA6889C39 }
+
+[IpcMethods.IClientApps.GetAppType]
+vft_index = 10
+func_hash = 0xDBD7CF03
+
+[IpcMethods.IClientRemoteStorage.IsCloudEnabledForApp]
+vft_index = 24
+func_hash = { current = 0x8712DD4A, 1781041600 = 0x88A72792 }
+
+[IpcMethods.IClientRemoteStorage.SetCloudEnabledForApp]
+vft_index = 25
+func_hash = 0x2EAADA14
+
+[IpcMethods.IClientUser.GetSteamID]
+vft_index = 10
+func_hash = 0xD6FC3200
+
+[IpcMethods.IClientUtils.GetOfflineMode]
+vft_index = 17
+func_hash = 0xD1D2D9CF
+
+[IpcMethods.IClientUtils.GetAppId]
+vft_index = 19
+func_hash = 0x09607EC4

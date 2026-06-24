@@ -49,7 +49,7 @@ METHODS = [
     ("IClientUtils",        "GetAppId",               4, 19),
     ("IClientUtils",        "GetOfflineMode",         4, 17),
 
-    # --- Outbound: methods SLSsteam calls into Steam (callVFuncByHash phase) ---
+    # --- Outbound: methods SLSsteam calls into Steam (index-first call sites) ---
     ("IClientApps",         "GetAppData",             7,  0),
     ("IClientApps",         "GetAppDataSection",      7,  5),
     ("IClientApps",         "RequestAppInfoUpdate",   7,  7),
@@ -273,46 +273,89 @@ def _print_results(results):
 
 
 def _merge_hash(old_val, new_hash: int, version: int):
-    """Merge a new hash into an existing TOML entry, preserving old values with max_version.
+    """Merge a new hash into a func_hash entry, preserving old values by max Steam version.
 
-    Returns the merged value: a scalar (if unchanged or first entry) or a list
-    of versioned candidates.
+    Returns a scalar for single/current-only values, or a dict shaped like:
+        {"current": new_hash, 1781041600: old_hash}
     """
     if old_val is None:
         return new_hash
 
-    # Normalize old_val to a list of {hash, max_version} dicts.
+    if isinstance(old_val, int):
+        if old_val == new_hash:
+            return old_val
+        return {"current": new_hash, version: old_val}
+
+    if isinstance(old_val, dict):
+        current = old_val.get("current")
+        if current is None:
+            current = next((v for k, v in old_val.items() if isinstance(v, int)), None)
+        if current == new_hash:
+            return old_val
+
+        merged = {"current": new_hash}
+        if current is not None:
+            merged[version] = current
+        for k, v in old_val.items():
+            if k == "current" or v == new_hash:
+                continue
+            merged[k] = v
+        return merged
+
+    # Legacy support for the pre-IpcMethods updater's list-of-tables shape.
     if isinstance(old_val, list):
-        entries = []
+        current = None
+        merged = {"current": new_hash}
         for item in old_val:
-            if isinstance(item, dict):
-                entries.append(dict(item))
-            else:
-                entries.append({"hash": item})
-    else:
-        entries = [{"hash": old_val}]
+            if not isinstance(item, dict):
+                if current is None:
+                    current = item
+                continue
+            h = item.get("hash")
+            mv = item.get("max_version")
+            if h is None or h == new_hash:
+                continue
+            if mv:
+                merged[mv] = h
+            elif current is None:
+                current = h
+        if current == new_hash:
+            return old_val
+        if current is not None:
+            merged[version] = current
+        return merged
 
-    # Check if new_hash is already present.
-    for e in entries:
-        if e["hash"] == new_hash:
-            # Already present — ensure it's the current (no max_version).
-            e.pop("max_version", None)
-            return entries if len(entries) > 1 else new_hash
+    return new_hash
 
-    # New hash differs. Demote the current latest entry (the one without
-    # max_version) by stamping it with the outgoing version.
-    for e in entries:
-        if "max_version" not in e:
-            e["max_version"] = version
-            break
 
-    # Prepend the new hash as the current latest (no max_version).
-    entries.insert(0, {"hash": new_hash})
-    return entries
+def _format_hash_value(val):
+    if isinstance(val, int):
+        return f"0x{val:08X}"
+    items = []
+    if "current" in val:
+        items.append(f"current = 0x{val['current']:08X}")
+    for k, h in val.items():
+        if k == "current":
+            continue
+        items.append(f"{k} = 0x{h:08X}")
+    return "{ " + ", ".join(items) + " }"
+
+
+def _format_index_value(val):
+    if isinstance(val, int):
+        return str(val)
+    items = []
+    if "current" in val:
+        items.append(f"current = {val['current']}")
+    for k, index in val.items():
+        if k == "current":
+            continue
+        items.append(f"{k} = {index}")
+    return "{ " + ", ".join(items) + " }"
 
 
 def _update_toml(results, toml_path: Path, version: int):
-    """Update the IpcHashes section in patterns.toml, preserving old hashes as versioned candidates."""
+    """Update IpcMethods in patterns.toml, preserving old func_hashes as versioned candidates."""
     try:
         import tomllib
     except ModuleNotFoundError:
@@ -325,60 +368,52 @@ def _update_toml(results, toml_path: Path, version: int):
 
     by_iface: dict = {}
     for r in results:
-        by_iface.setdefault(r["interface"], {})[r["method"]] = r["funchash"]
+        by_iface.setdefault(r["interface"], {})[r["method"]] = r
 
-    old = doc.get("IpcHashes") or {}
+    if "IpcHashes" in doc:
+        raise RuntimeError("legacy IpcHashes is no longer supported; use IpcMethods.<Interface>.<Method>.func_hash")
+
+    old_methods_root = doc.get("IpcMethods") or {}
     merged: dict = {}
-    for iface in sorted(old.keys() | by_iface.keys()):
-        old_methods = old.get(iface) or {}
+    for iface in sorted(old_methods_root.keys() | by_iface.keys()):
+        old_methods = old_methods_root.get(iface) or {}
         new_methods = by_iface.get(iface) or {}
         methods: dict = {}
         for m in sorted(old_methods.keys() | new_methods.keys()):
-            old_v = old_methods.get(m)
-            new_h = new_methods.get(m)
-            if new_h is not None:
-                methods[m] = _merge_hash(old_v, new_h, version)
+            old_spec = old_methods.get(m) or {}
+            old_hash = old_spec.get("func_hash") if isinstance(old_spec, dict) else None
+            old_index = old_spec.get("vft_index") if isinstance(old_spec, dict) else None
+            result = new_methods.get(m)
+            if result is not None:
+                methods[m] = {
+                    "vft_index": old_index if old_index is not None else result.get("vtable_index"),
+                    "func_hash": _merge_hash(old_hash, result["funchash"], version),
+                }
             else:
-                methods[m] = old_v
+                methods[m] = {
+                    "vft_index": old_index,
+                    "func_hash": old_hash,
+                }
         merged[iface] = methods
 
     lines = []
     for iface, methods in merged.items():
-        lines.append(f"[IpcHashes.{iface}]")
-        for m, val in methods.items():
-            if isinstance(val, int):
-                lines.append(f"{m} = 0x{val:08X}")
-            else:
-                items = []
-                for entry in val:
-                    h = entry["hash"]
-                    mv = entry.get("max_version")
-                    s = f"{{ hash = 0x{h:08X}"
-                    if mv:
-                        s += f", max_version = {mv}"
-                    s += " }"
-                    items.append(s)
-                lines.append(f"{m} = [{', '.join(items)}]")
-        lines.append("")
+        for m, spec in methods.items():
+            lines.append(f"[IpcMethods.{iface}.{m}]")
+            if spec.get("vft_index") is not None:
+                lines.append(f"vft_index = {_format_index_value(spec['vft_index'])}")
+            lines.append(f"func_hash = {_format_hash_value(spec['func_hash'])}")
+            lines.append("")
     new_section = "\n".join(lines) + "\n"
 
     import re as _re
-    # Match all [IpcHashes.*] sections until the next non-IpcHashes section or EOF.
-    # Without DOTALL so '.' does not cross newlines; the trailing (?:...|\Z) handles
-    # both "next section starts" and "end of file" cases.
-    pattern = _re.compile(
-        r'^\[IpcHashes\.\w+\].*?(?=^\[[^I]|\Z)',
-        _re.MULTILINE | _re.DOTALL,
-    )
-    if pattern.search(text):
-        text = pattern.sub(new_section, text)
-    else:
-        text = text.rstrip() + "\n\n" + new_section
+    text = _re.sub(r'^\[IpcMethods\.\w+\.\w+\]\n.*?(?=^\[|\Z)', '', text, flags=_re.MULTILINE | _re.DOTALL)
+    text = text.rstrip() + "\n\n" + new_section
 
     toml_path.write_text(text)
     changed = sum(1 for iface in merged.values()
-                  for v in iface.values() if isinstance(v, list))
-    print(f"Updated IpcHashes in {toml_path} ({changed} versioned entries)", file=sys.stderr)
+                  for v in iface.values() if isinstance(v.get("func_hash"), dict))
+    print(f"Updated IpcMethods in {toml_path} ({changed} versioned func_hash entries)", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +423,7 @@ def _update_toml(results, toml_path: Path, version: int):
 def main():
     parser = argparse.ArgumentParser(
         description="Extract IPC funcHash constants from steamclient.so and "
-                    "update the IpcHashes section in res/patterns.toml."
+                    "update the IpcMethods section in res/patterns.toml."
     )
     parser.add_argument("so_path", help="Path to steamclient.so (32-bit ELF)")
     parser.add_argument(

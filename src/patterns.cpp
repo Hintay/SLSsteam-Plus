@@ -1,5 +1,6 @@
 #include "patterns.hpp"
 #include "config.hpp"
+#include "driftreport.hpp"
 #include "globals.hpp"
 #include "ipchash.gen.hpp"
 #include "ipcoutbound.hpp"
@@ -118,6 +119,13 @@ bool Patterns::init()
 			}
 		}
 	}
+
+	// Surface remaining misses through the consolidated drift report. Recovered
+	// patterns (whether builtin-resolved or online-recovered) are not pushed.
+	for (const auto* p : failed)
+		DriftReport::pushUnresolvedPattern(p->name.c_str(), false);
+	for (const auto* p : optionalFailed)
+		DriftReport::pushUnresolvedPattern(p->name.c_str(), true);
 
 	return failed.empty();
 }

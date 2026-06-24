@@ -9,10 +9,9 @@
 #include <vector>
 
 // Outbound counterpart to IpcDispatch. Where IpcDispatch keys INBOUND interception on the
-// funcHash carried in the IPC packet, this resolves the vtable index of an OUTBOUND call from
-// the same build-stable funcHash — by scanning the live vtable in-process for the wrapper that
-// embeds it. This makes SLSsteam's own IClient* calls immune to vtable-index drift: the only
-// fragile input was the hardcoded vtable index, and funcHash replaces it.
+// funcHash carried in the IPC packet, this can resolve a vtable index from that selector by
+// scanning the client wrapper that embeds it. New call sites prefer RE-confirmed vtable indexes;
+// funcHash resolution remains useful for diagnostics and online hash fallback.
 namespace IpcOutbound
 {
 	// Test whether the 12 bytes at p are an embedded-funcHash mov:
@@ -47,14 +46,14 @@ namespace IpcOutbound
 		return false;
 	}
 
-	// Resolve a method's vtable index from its build-stable funcHash, by locating the CLIENT-side
+	// Resolve a method's vtable index from its IPC funcHash selector, by locating the CLIENT-side
 	// serialize wrapper (the only place the funcHash is embedded) in steamclient's .text, finding
 	// the client wrapper-vtable slot that points into it, and walking back to method0. The index
 	// is identical on the client wrapper vtable and the server-side `g_pClient*` vtable SLSsteam
 	// actually calls, so callers apply it to their `g_pClient*` directly. Returns -1 on miss.
 	//
-	// The (name, bakedHash) overload tries bakedHash first; on miss, looks up name in the online
-	// IpcHashes overrides (set by setOnlineHashes) and retries with the updated hash.
+	// The (name, bakedHash) overload tries bakedHash first; on miss, looks up name in online
+	// IpcMethods overrides (set by setOnlineHashes) and retries with the updated hash.
 	//
 	// Does NOT take the interface pointer: the server-side vtable (what SLSsteam holds) does NOT
 	// embed the funcHash — only the client wrapper does — so resolution scans the module, not the
@@ -72,10 +71,20 @@ namespace IpcOutbound
 	// Check whether a funcHash mov exists in the scanned .text (requires warmup() first).
 	bool hasHash(uint32_t funcHash);
 
-	// Invoke vtable[index](this, args...) at an already-resolved index. Pair with a call-site
-	// cached resolve (no hardcoded fallback):
-	//   static const int idx = IpcOutbound::resolveIndex(funcHash);
-	//   if (idx < 0) return {};                       // resolve miss -> skip the call
+	// Best-effort static guard: decode the method name passed to TraceIPC from the wrapper's
+	// prologue and return it. The check anchors on the wrapper's actual call to TraceIPC, so the
+	// returned name is the build-stable IPC method label (independent of .rodata layout).
+	// Returns nullptr when the wrapper layout is unknown — caller MUST treat this as "no signal"
+	// and rely on the dynamic TraceIPC check, never as a mismatch.
+	const char* resolveStaticInternalName(const char* expectedFullName, unsigned int index, uintptr_t functionAddress = 0);
+
+	// Register TraceIPC's resolved runtime address. The wrapper decoder uses this to identify the
+	// `call rel32` instruction whose preceding lea instructions carry the iface/method strings.
+	// Call once, after Hooks::setup() resolves TraceIPC, before any installVFTByIndex.
+	void setTraceIpcAddr(uintptr_t addr);
+
+	// Invoke vtable[index](this, args...) at an already-known index:
+	//   static const int idx = VFTIndexes::IClientApps::GetAppData();
 	//   return IpcOutbound::callAt<Sig>(idx, this, args...);
 	template <typename tFN, typename... Args>
 	auto callAt(int index, void* thisPtr, Args... args)

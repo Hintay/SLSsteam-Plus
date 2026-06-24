@@ -97,7 +97,7 @@ static const NewConfigEntry kNewConfigEntries[] = {
 	// --- Internal ---
 	{ "OnlinePatterns", "Internal",
 	  "# Fetch the latest patterns online (HTTPS) on startup to pick up updated\n"
-	  "# signatures and IpcHashes for new Steam builds without re-downloading SLSsteam.\n"
+	  "# signatures and IPC method hashes for new Steam builds without re-downloading SLSsteam.\n"
 	  "#OnlinePatterns = true\n" },
 
 	{ "OfflineAchievementsSchema", "Internal",

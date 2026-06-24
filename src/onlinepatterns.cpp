@@ -340,8 +340,8 @@ namespace
 		}
 	}
 
-	// Parse an IpcHash value. Scalar int → single hash (maxVersion=0).
-	// Table with "current" + version keys → versioned hashes.
+	// Parse an IPC func_hash value. Scalar int -> single hash (maxVersion=0).
+	// Table with "current" + version keys -> versioned hashes.
 	void parseIpcHashValue(const toml::node& val, std::vector<VersionedHash>& vec)
 	{
 		if (auto v = val.value<int64_t>())
@@ -360,6 +360,26 @@ namespace
 			}
 		}
 	}
+
+	void parseIpcMethods(const toml::table& ipcMethods, std::map<std::string, std::vector<VersionedHash>>& out)
+	{
+		for (const auto& [ifaceKey, ifaceVal] : ipcMethods)
+		{
+			const std::string ifaceName(ifaceKey.str());
+			const auto* methods = ifaceVal.as_table();
+			if (!methods) continue;
+			for (const auto& [mKey, mVal] : *methods)
+			{
+				const auto* spec = mVal.as_table();
+				if (!spec) continue;
+				const auto* hash = spec->get("func_hash");
+				if (!hash) continue;
+				const std::string fullKey = ifaceName + "::" + std::string(mKey.str());
+				parseIpcHashValue(*hash, out[fullKey]);
+			}
+		}
+	}
+
 }
 
 OnlinePatterns::Overrides OnlinePatterns::fetchAndParse()
@@ -398,23 +418,11 @@ OnlinePatterns::Overrides OnlinePatterns::fetchAndParse()
 			}
 		}
 
-		if (auto* ipcHashes = root["IpcHashes"].as_table())
-		{
-			for (const auto& [ifaceKey, ifaceVal] : *ipcHashes)
-			{
-				const std::string ifaceName(ifaceKey.str());
-				const auto* methods = ifaceVal.as_table();
-				if (!methods) continue;
-				for (const auto& [mKey, mVal] : *methods)
-				{
-					const std::string fullKey = ifaceName + "::" + std::string(mKey.str());
-					parseIpcHashValue(mVal, ov.ipcHashes[fullKey]);
-				}
-			}
-		}
+		if (auto* ipcMethods = root["IpcMethods"].as_table())
+			parseIpcMethods(*ipcMethods, ov.ipcHashes);
 
 		ov.usable = true;
-		g_pLog->info("OnlinePatterns: parsed %zu pattern entries, %zu ipc hashes\n",
+		g_pLog->info("OnlinePatterns: parsed %zu pattern entries, %zu IPC method hashes\n",
 			ov.byName.size(), ov.ipcHashes.size());
 	}
 	catch (...)
