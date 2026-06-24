@@ -200,19 +200,32 @@
   # name (vs the old liblua5.4.a) does not matter.
   luaLib = i686.lua5_4;
 
-  # 64-bit Proton DLL injection helper. Plain C, no deps — built with the native
-  # (x86_64) stdenv, not the i686 one used for SLSsteam.so.
+  # 64-bit Proton DLL injection helper. Freestanding C++17 (no STL, no
+  # exceptions, no RTTI) so the clone()-spawned poll thread stays safe.
+  # Also depends on src/feats/protoninject_protocol.h for the IPC protocol,
+  # so the source fileset includes both directories.
   protonInject = pkgs.stdenv.mkDerivation {
     pname = "sls-proton-inject";
     version = rev;
     src = lib.fileset.toSource {
       root = ../.;
-      fileset = ../tools/proton_inject;
+      fileset = lib.fileset.unions [
+        ../tools/proton_inject
+        ../src/feats/protoninject_protocol.h
+      ];
     };
     dontConfigure = true;
     buildPhase = ''
-      gcc -shared -fPIC -O2 -Wall -Wextra -Wpedantic \
-        -o sls_proton_inject.so tools/proton_inject/inject.c
+      g++ -shared -fPIC -O2 -Wall -Wextra -Wpedantic \
+        -std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics \
+        -o sls_proton_inject.so \
+        tools/proton_inject/inject.cpp \
+        tools/proton_inject/loader.cpp \
+        tools/proton_inject/ipc.cpp \
+        tools/proton_inject/detour.cpp \
+        tools/proton_inject/pe.cpp \
+        tools/proton_inject/maps.cpp \
+        tools/proton_inject/log.cpp
     '';
     installPhase = ''
       install -Dm755 sls_proton_inject.so $out/lib/sls_proton_inject.so

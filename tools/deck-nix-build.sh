@@ -37,7 +37,7 @@ echo "[deck-nix] building 32-bit SLSsteam libraries"
 
 echo "[deck-nix] building 64-bit Proton injection helper"
 "$NIX_SHELL" -E 'with import <nixpkgs> {}; mkShell { nativeBuildInputs = [ gcc gnumake pkg-config file ]; }' --run \
-	"set -e; make bin/sls_proton_inject.so HOST_CC=gcc; test -s bin/sls_proton_inject.so"
+	"set -e; make bin/sls_proton_inject.so HOST_CC=gcc HOST_CXX=g++; test -s bin/sls_proton_inject.so"
 
 if command -v file >/dev/null 2>&1; then
 	file bin/SLSsteam.so bin/library-inject.so bin/sls_proton_inject.so

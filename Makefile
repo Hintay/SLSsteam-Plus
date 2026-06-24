@@ -7,6 +7,7 @@ CC := gcc
 # Native compiler for 64-bit helper tools. Keep this separate from CC because
 # SLSsteam itself is normally built with -m32 / i686 toolchains.
 HOST_CC ?= gcc
+HOST_CXX ?= g++
 
 include deps.mk
 
@@ -128,6 +129,13 @@ bin/pkg_smoke: tools/pkg_smoke/smoke.cpp
 	g++ -std=c++17 -o bin/pkg_smoke tools/pkg_smoke/smoke.cpp
 
 pkg_smoke: bin/pkg_smoke
+
+bin/proton_protocol_smoke: tools/proton_protocol_smoke/smoke.cpp src/feats/protoninject_protocol.h
+	@mkdir -p bin
+	g++ -std=c++20 -Wall -Wextra -Wpedantic -I. -o bin/proton_protocol_smoke tools/proton_protocol_smoke/smoke.cpp
+
+proton_protocol_smoke: bin/proton_protocol_smoke
+	./bin/proton_protocol_smoke
 
 bin/netpacket_smoke: tools/netpacket_smoke/smoke.cpp src/sdk/RawNetPacket.hpp src/sdk/RawNetPacket.cpp src/sdk/CNetPacket.hpp
 	@mkdir -p bin
@@ -297,11 +305,26 @@ bin/library-inject.so: tools/library-inject/main.cpp tools/library-inject/build.
 	cp tools/library-inject/library-inject.so bin/library-inject.so
 
 # Proton DLL injection helper (LD_PRELOAD into 64-bit Wine).
-# Build with a native 64-bit compiler; the helper currently does not support
-# 32-bit Wine processes, so there is intentionally no i386 helper target.
-bin/sls_proton_inject.so: tools/proton_inject/inject.c
+# Built as freestanding C++17 — no STL, no exceptions, no RTTI, no
+# thread-safe static init. The helper runs partially in a clone()-spawned
+# thread without a TCB, so it must avoid any libc/libstdc++ runtime that
+# touches errno or TLS.
+PROTON_INJECT_SRCS := \
+	tools/proton_inject/inject.cpp \
+	tools/proton_inject/loader.cpp \
+	tools/proton_inject/ipc.cpp \
+	tools/proton_inject/detour.cpp \
+	tools/proton_inject/pe.cpp \
+	tools/proton_inject/maps.cpp \
+	tools/proton_inject/log.cpp
+
+PROTON_INJECT_HDRS := $(wildcard tools/proton_inject/*.hpp)
+
+bin/sls_proton_inject.so: $(PROTON_INJECT_SRCS) $(PROTON_INJECT_HDRS)
 	@mkdir -p bin
-	$(HOST_CC) -shared -fPIC -O2 -Wall -Wextra -Wpedantic -o $@ $<
+	$(HOST_CXX) -shared -fPIC -O2 -Wall -Wextra -Wpedantic \
+		-std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics \
+		-o $@ $(PROTON_INJECT_SRCS)
 
 tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber:
 	sh tools/ticket-grabber/build.sh
@@ -365,5 +388,5 @@ build: audit-libs
 rebuild: clean build
 all: clean build zips
 
-.PHONY: all build clean rebuild zips lua_smoke pkg_smoke netpacket_smoke pattern_smoke deps
+.PHONY: all build clean rebuild zips lua_smoke pkg_smoke proton_protocol_smoke netpacket_smoke pattern_smoke deps
 .NOTPARALLEL: clean rebuild zips

@@ -1,20 +1,30 @@
 #include "protoninject.hpp"
+#include "protoninject_protocol.h"
 
 #include "../config.hpp"
 #include "../globals.hpp"
 #include "../log.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstddef>
 #include <cstring>
 #include <dlfcn.h>
 #include <elf.h>
+#include <errno.h>
 #include <filesystem>
 #include <link.h>
+#include <mutex>
+#include <pthread.h>
 #include <string>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
 #include <unordered_map>
 #include <unistd.h>
+#include <vector>
 
 namespace
 {
@@ -97,16 +107,28 @@ namespace
 	// ── execvpe GOT hook ───────────────────────────────────────────
 	// Steam calls execvpe(file, argv, envp) in the child after fork.
 	// We match by AppId (from envp) or by Flag (substring in argv), then
-	// inject LD_PRELOAD + PROTON_SLS_INJECT_DLL into envp.
+	// inject LD_PRELOAD + ProtonInject protocol env vars into envp.
 
 	using execvpe_fn = int(*)(const char*, char* const[], char* const[]);
 	execvpe_fn g_origExecvpe = nullptr;
 
-	std::string g_injectPreloadPaths;
-	std::unordered_map<uint32_t, std::string> g_injectDllByApp;
+	struct InjectEntry {
+		std::string dllPath;
+		std::string sessionToken;
+	};
+	struct FlagEntry {
+		std::string flag;
+		InjectEntry inject;
+	};
+	struct LaunchRules {
+		uint32_t appId = 0;
+		std::string helperSo;
+		std::unordered_map<uint32_t, InjectEntry> dllByApp;
+		std::vector<FlagEntry> dllByFlag;
+	};
 
-	struct FlagEntry { std::string flag; std::string dllPath; };
-	std::vector<FlagEntry> g_injectDllByFlag;
+	std::mutex g_launchRulesMu;
+	std::unordered_map<uint32_t, LaunchRules> g_launchRulesByApp;
 
 	size_t getSystemPageSize()
 	{
@@ -134,24 +156,24 @@ namespace
 		return nullptr;
 	}
 
-	bool parseAppId(const char* value, uint32_t& appId)
+	uint32_t getLaunchAppId(char* const envp[])
 	{
-		if (!value || !*value) return false;
-		for (const char* p = value; *p; p++) {
-			if (*p < '0' || *p > '9') return false;
-		}
-		char* end = nullptr;
-		unsigned long parsed = strtoul(value, &end, 10);
-		if (!end || *end != '\0' || parsed > UINT32_MAX) return false;
-		appId = static_cast<uint32_t>(parsed);
-		return true;
+		return sls_proton_select_app_id(
+			nullptr,
+			getEnvValue(envp, "SteamAppId"),
+			getEnvValue(envp, "SteamGameId"));
 	}
 
-	void clearInjectRules()
+	void clearLaunchRules()
 	{
-		g_injectPreloadPaths.clear();
-		g_injectDllByApp.clear();
-		g_injectDllByFlag.clear();
+		std::lock_guard<std::mutex> lock(g_launchRulesMu);
+		g_launchRulesByApp.clear();
+	}
+
+	void eraseLaunchRules(uint32_t appId)
+	{
+		std::lock_guard<std::mutex> lock(g_launchRulesMu);
+		g_launchRulesByApp.erase(appId);
 	}
 
 	bool colonListContains(const char* value, const std::string& needle)
@@ -169,55 +191,243 @@ namespace
 		return false;
 	}
 
-	struct LaunchMatch { std::string dllPath; int argIndex; size_t flagPos; size_t flagLen; };
+	struct LaunchMatch {
+		uint32_t appId = 0;
+		std::string helperSo;
+		std::string dllPath;
+		std::string sessionToken;
+		int argIndex = -1;
+		size_t flagPos = 0;
+		size_t flagLen = 0;
+	};
+
+	struct PendingSession {
+		uint32_t appId = 0;
+		std::string dllPath;
+	};
+
+	std::mutex g_pendingSessionsMu;
+	std::unordered_map<std::string, PendingSession> g_pendingSessions;
+	int g_controlFd = -1;
+	pthread_t g_controlThread{};
+	bool g_controlThreadStarted = false;
+
+	bool buildAbstractSocketAddress(const char* token, sockaddr_un& addr, socklen_t& len)
+	{
+		char socketName[sizeof(addr.sun_path) - 1] = {};
+		if (!sls_proton_build_socket_name(socketName, sizeof(socketName), token)) return false;
+		const size_t nameLen = strlen(socketName);
+		if (nameLen + 1 > sizeof(addr.sun_path)) return false;
+		memset(&addr, 0, sizeof(addr));
+		addr.sun_family = AF_UNIX;
+		addr.sun_path[0] = '\0';
+		memcpy(addr.sun_path + 1, socketName, nameLen);
+		len = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + nameLen);
+		return true;
+	}
+
+	bool writeAll(int fd, const char* data, size_t len)
+	{
+		while (len > 0) {
+			ssize_t n = write(fd, data, len);
+			if (n < 0) {
+				if (errno == EINTR) continue;
+				return false;
+			}
+			if (n == 0) return false;
+			data += n;
+			len -= static_cast<size_t>(n);
+		}
+		return true;
+	}
+
+	void handleControlClient(int clientFd)
+	{
+		char token[128] = {};
+		ssize_t n = read(clientFd, token, sizeof(token) - 1);
+		if (n <= 0) {
+			close(clientFd);
+			return;
+		}
+		token[n] = '\0';
+		for (char* p = token; *p; ++p) {
+			if (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t') {
+				*p = '\0';
+				break;
+			}
+		}
+
+		PendingSession session;
+		bool found = false;
+		{
+			// Tokens are single-use: once a Wine child has resolved its DLL
+			// path the entry is no longer reachable, and replaying the same
+			// token shouldn't leak the path to anyone else. Erase on consume.
+			std::lock_guard<std::mutex> lock(g_pendingSessionsMu);
+			auto it = g_pendingSessions.find(token);
+			if (it != g_pendingSessions.end()) {
+				session = std::move(it->second);
+				g_pendingSessions.erase(it);
+				found = true;
+			}
+		}
+
+		char response[1024] = {};
+		if (found && sls_proton_build_ok_response(response, sizeof(response), session.appId, session.dllPath.c_str())) {
+			if (!writeAll(clientFd, response, strlen(response)))
+				g_pLog->warn("ProtonInject: failed to write IPC response\n");
+		} else {
+			static const char deny[] = SLS_PROTON_INJECT_PROTO_MAGIC " DENY unknown-session\n";
+			if (!writeAll(clientFd, deny, sizeof(deny) - 1))
+				g_pLog->warn("ProtonInject: failed to write IPC deny response\n");
+		}
+		close(clientFd);
+	}
+
+	void* controlThreadMain(void*)
+	{
+		for (;;) {
+			int clientFd = accept(g_controlFd, nullptr, nullptr);
+			if (clientFd < 0) {
+				if (errno == EINTR) continue;
+				break;
+			}
+			handleControlClient(clientFd);
+		}
+		return nullptr;
+	}
+
+	bool ensureControlServer()
+	{
+		if (g_controlThreadStarted) return true;
+
+		int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (fd < 0) {
+			g_pLog->warn("ProtonInject: failed to create control socket\n");
+			return false;
+		}
+
+		sockaddr_un addr{};
+		socklen_t len = 0;
+		if (!buildAbstractSocketAddress(SLS_PROTON_INJECT_CONTROL_TOKEN, addr, len) ||
+		    bind(fd, reinterpret_cast<sockaddr*>(&addr), len) != 0 ||
+		    listen(fd, 16) != 0) {
+			g_pLog->warn("ProtonInject: failed to bind control socket\n");
+			close(fd);
+			return false;
+		}
+
+		g_controlFd = fd;
+		if (pthread_create(&g_controlThread, nullptr, controlThreadMain, nullptr) != 0) {
+			g_pLog->warn("ProtonInject: failed to start control thread\n");
+			close(fd);
+			g_controlFd = -1;
+			return false;
+		}
+		pthread_detach(g_controlThread);
+		g_controlThreadStarted = true;
+		return true;
+	}
+
+	std::string registerPendingSession(uint32_t appId, const std::string& dllPath)
+	{
+		// Sequence counter is incremented atomically — execvpe is hooked at the
+		// GOT slot and may be called from any Steam thread (fork() helpers are
+		// not guaranteed to be on the main thread), so this could race with
+		// concurrent LaunchApp callbacks.
+		static std::atomic<uint64_t> seq{0};
+		timespec ts{};
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		const uint64_t seqValue = seq.fetch_add(1, std::memory_order_relaxed) + 1;
+		char token[96] = {};
+		snprintf(token, sizeof(token), "%u-%ld-%ld-%llu", appId, static_cast<long>(ts.tv_sec),
+		         static_cast<long>(ts.tv_nsec), static_cast<unsigned long long>(seqValue));
+
+		std::lock_guard<std::mutex> lock(g_pendingSessionsMu);
+		g_pendingSessions[token] = {appId, dllPath};
+		return token;
+	}
+
+	// Drop any pending session tokens belonging to `appId`. Called from
+	// onLaunchApp so a re-launch (or a launch that never produced a Wine
+	// child) does not accumulate unclaimed tokens.
+	void dropPendingSessionsForApp(uint32_t appId)
+	{
+		std::lock_guard<std::mutex> lock(g_pendingSessionsMu);
+		for (auto it = g_pendingSessions.begin(); it != g_pendingSessions.end(); ) {
+			if (it->second.appId == appId)
+				it = g_pendingSessions.erase(it);
+			else
+				++it;
+		}
+	}
+
+	LaunchMatch findFlagMatch(const LaunchRules& rules, char* const argv[])
+	{
+		if (rules.dllByFlag.empty() || !argv) return {};
+		for (int i = 0; argv[i]; i++) {
+			for (const auto& fe : rules.dllByFlag) {
+				const char* pos = strstr(argv[i], fe.flag.c_str());
+				if (!pos) continue;
+				size_t off = pos - argv[i];
+				size_t flen = fe.flag.size();
+				char after = pos[flen];
+				char before = (off > 0) ? pos[-1] : ' '; /* start-of-string counts as boundary */
+				if ((before == ' ' || before == '\t') &&
+				    (after == '\0' || after == ' ' || after == '\t' || after == '\''))
+					return {rules.appId, rules.helperSo, fe.inject.dllPath, fe.inject.sessionToken, i, off, flen};
+			}
+		}
+		return {};
+	}
 
 	LaunchMatch findDllForLaunch(char* const argv[], char* const envp[])
 	{
-		uint32_t appId = 0;
-		if (!parseAppId(getEnvValue(envp, "SteamAppId"), appId))
-			parseAppId(getEnvValue(envp, "SteamGameId"), appId);
+		const uint32_t appId = getLaunchAppId(envp);
+		std::lock_guard<std::mutex> lock(g_launchRulesMu);
 
 		if (appId) {
-			auto it = g_injectDllByApp.find(appId);
-			if (it != g_injectDllByApp.end())
-				return {it->second, -1, 0, 0};
-		}
+			auto rulesIt = g_launchRulesByApp.find(appId);
+			if (rulesIt != g_launchRulesByApp.end()) {
+				auto appIt = rulesIt->second.dllByApp.find(appId);
+				if (appIt != rulesIt->second.dllByApp.end())
+					return {appId, rulesIt->second.helperSo, appIt->second.dllPath, appIt->second.sessionToken, -1, 0, 0};
 
-		if (!g_injectDllByFlag.empty() && argv) {
-			for (int i = 0; argv[i]; i++) {
-				for (const auto& fe : g_injectDllByFlag) {
-					const char* pos = strstr(argv[i], fe.flag.c_str());
-					if (!pos) continue;
-					size_t off = pos - argv[i];
-					size_t flen = fe.flag.size();
-					char after = pos[flen];
-					char before = (off > 0) ? pos[-1] : ' '; /* start-of-string counts as boundary */
-					if ((before == ' ' || before == '\t') &&
-					    (after == '\0' || after == ' ' || after == '\t' || after == '\''))
-						return {fe.dllPath, i, off, flen};
-				}
+				LaunchMatch byFlag = findFlagMatch(rulesIt->second, argv);
+				if (!byFlag.dllPath.empty()) return byFlag;
 			}
+
+			return {};
 		}
 
-		return {"", -1, 0, 0};
+		// If Steam's envp did not expose an AppId, fall back to launch-option flags.
+		for (const auto& [_, rules] : g_launchRulesByApp) {
+			LaunchMatch byFlag = findFlagMatch(rules, argv);
+			if (!byFlag.dllPath.empty()) return byFlag;
+		}
+
+		return {};
 	}
 
-	void refreshInjectRules(const CConfig::ProtonInjectConfig& cfg, uint32_t currentAppId)
+	LaunchRules buildLaunchRules(const CConfig::ProtonInjectConfig& cfg, uint32_t currentAppId, const std::string& helperSo)
 	{
-		g_injectDllByApp.clear();
-		g_injectDllByFlag.clear();
+		LaunchRules rules;
+		rules.appId = currentAppId;
+		rules.helperSo = helperSo;
 		for (const auto& entry : cfg.dlls) {
 			if (entry.path.empty()) continue;
+			const bool relevant = entry.apps.count(currentAppId) || !entry.flag.empty();
 			if (!std::filesystem::exists(entry.path)) {
-				if (entry.apps.count(currentAppId) || !entry.flag.empty())
+				if (relevant)
 					g_pLog->warn("ProtonInject: DLL not found: %s\n", entry.path.c_str());
 				continue;
 			}
-			for (const auto appId : entry.apps)
-				g_injectDllByApp.emplace(appId, entry.path);
+			if (entry.apps.count(currentAppId))
+				rules.dllByApp[currentAppId] = {entry.path, registerPendingSession(currentAppId, entry.path)};
 			if (!entry.flag.empty())
-				g_injectDllByFlag.push_back({entry.flag, entry.path});
+				rules.dllByFlag.push_back({entry.flag, {entry.path, registerPendingSession(currentAppId, entry.path)}});
 		}
+		return rules;
 	}
 
 	int getPageProtection(uintptr_t address)
@@ -252,7 +462,7 @@ namespace
 		}
 
 		const auto match = findDllForLaunch(argv, envp);
-		if (match.dllPath.empty() || g_injectPreloadPaths.empty())
+		if (match.dllPath.empty() || match.helperSo.empty() || !match.appId)
 			return g_origExecvpe(file, argv, envp);
 
 		/* If matched by flag, strip it from the argv string so the game
@@ -280,44 +490,47 @@ namespace
 		int count = 0;
 		while (envp[count]) count++;
 
-		// Build new envp: append the 64-bit helper to LD_PRELOAD so Wine loads it.
-		// +2 for LD_PRELOAD + PROTON_SLS_INJECT_DLL, +1 for NULL
-		char** newEnvp = static_cast<char**>(alloca((count + 3) * sizeof(char*)));
+		if (match.sessionToken.empty())
+			return g_origExecvpe(file, argv, envp);
 
-		std::string dllEntry = "PROTON_SLS_INJECT_DLL=" + match.dllPath;
+		std::string sessionEntry = std::string(SLS_PROTON_INJECT_SESSION_ENV) + "=" + match.sessionToken;
+
+		// Build new envp: append helper preload and opaque IPC session token.
+		// +2 for LD_PRELOAD + session, +1 for NULL
+		char** newEnvp = static_cast<char**>(alloca((count + 3) * sizeof(char*)));
 
 		std::string ldPreloadEntry;
 		for (int i = 0; i < count; i++) {
 			if (startsWith(envp[i], "LD_PRELOAD=")) {
 				const char* curPreload = envp[i] + 11;
-				if (colonListContains(curPreload, g_injectPreloadPaths))
+				if (colonListContains(curPreload, match.helperSo))
 					ldPreloadEntry = envp[i];
 				else
-					ldPreloadEntry = std::string(envp[i]) + ":" + g_injectPreloadPaths;
+					ldPreloadEntry = std::string(envp[i]) + ":" + match.helperSo;
 				break;
 			}
 		}
 		if (ldPreloadEntry.empty())
-			ldPreloadEntry = "LD_PRELOAD=" + g_injectPreloadPaths;
+			ldPreloadEntry = "LD_PRELOAD=" + match.helperSo;
 
 		int dst = 0;
 		bool replacedPreload = false;
-		bool replacedDll = false;
+		bool replacedSession = false;
 		for (int i = 0; i < count; i++) {
 			if (startsWith(envp[i], "LD_PRELOAD=")) {
 				newEnvp[dst++] = const_cast<char*>(ldPreloadEntry.c_str());
 				replacedPreload = true;
-			} else if (startsWith(envp[i], "PROTON_SLS_INJECT_DLL=")) {
-				newEnvp[dst++] = const_cast<char*>(dllEntry.c_str());
-				replacedDll = true;
+			} else if (startsWith(envp[i], SLS_PROTON_INJECT_SESSION_ENV "=")) {
+				newEnvp[dst++] = const_cast<char*>(sessionEntry.c_str());
+				replacedSession = true;
 			} else {
 				newEnvp[dst++] = envp[i];
 			}
 		}
 		if (!replacedPreload)
 			newEnvp[dst++] = const_cast<char*>(ldPreloadEntry.c_str());
-		if (!replacedDll)
-			newEnvp[dst++] = const_cast<char*>(dllEntry.c_str());
+		if (!replacedSession)
+			newEnvp[dst++] = const_cast<char*>(sessionEntry.c_str());
 		newEnvp[dst] = nullptr;
 
 		return g_origExecvpe(file, newArgv, newEnvp);
@@ -353,31 +566,51 @@ namespace
 
 void ProtonInject::onLaunchApp(uint32_t appId)
 {
+	// Drop any tokens left behind by a previous launch of this app
+	// (game crashed before its Wine helper connected, user cancelled, etc.)
+	// so g_pendingSessions stays bounded across re-launches.
+	dropPendingSessionsForApp(appId);
+
 	const auto cfg = g_config.protonInject.get();
 	if (cfg.dlls.empty()) {
-		clearInjectRules();
+		clearLaunchRules();
 		return;
 	}
 
 	const std::string helperSo = findHelperSo("sls_proton_inject.so", cfg.dir);
 	if (helperSo.empty()) {
-		clearInjectRules();
+		clearLaunchRules();
 		g_pLog->warn("ProtonInject: sls_proton_inject.so not found\n");
 		return;
 	}
 
-	refreshInjectRules(cfg, appId);
-	if (g_injectDllByApp.empty() && g_injectDllByFlag.empty()) return;
-	g_injectPreloadPaths = helperSo;
+	if (!ensureControlServer()) {
+		clearLaunchRules();
+		return;
+	}
+
+	LaunchRules rules = buildLaunchRules(cfg, appId, helperSo);
+	if (rules.dllByApp.empty() && rules.dllByFlag.empty()) {
+		eraseLaunchRules(appId);
+		return;
+	}
 
 	if (!g_hooked) {
 		g_hooked = installHooks();
-		if (!g_hooked) return;
+		if (!g_hooked) {
+			eraseLaunchRules(appId);
+			return;
+		}
 	}
 
-	auto appIt = g_injectDllByApp.find(appId);
-	if (appIt != g_injectDllByApp.end())
-		g_pLog->info("ProtonInject: appId %u -> %s\n", appId, appIt->second.c_str());
-	else if (!g_injectDllByFlag.empty())
-		g_pLog->info("ProtonInject: appId %u (flag matching active, %zu rules)\n", appId, g_injectDllByFlag.size());
+	{
+		std::lock_guard<std::mutex> lock(g_launchRulesMu);
+		g_launchRulesByApp[appId] = rules;
+	}
+
+	auto appIt = rules.dllByApp.find(appId);
+	if (appIt != rules.dllByApp.end())
+		g_pLog->info("ProtonInject: appId %u -> %s\n", appId, appIt->second.dllPath.c_str());
+	else if (!rules.dllByFlag.empty())
+		g_pLog->info("ProtonInject: appId %u (flag matching active, %zu rules)\n", appId, rules.dllByFlag.size());
 }
