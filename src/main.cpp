@@ -5,6 +5,7 @@
 #include "hooks.hpp"
 #include "log.hpp"
 #include "lua/LuaLoader.hpp"
+#include "onlinepatterns.hpp"
 #include "patterns.hpp"
 #include "utils.hpp"
 
@@ -222,6 +223,9 @@ unsigned int la_version(unsigned int)
 
 unsigned int la_objopen(struct link_map *map, __attribute__((unused)) Lmid_t lmid, __attribute__((unused)) uintptr_t *cookie)
 {
+	if (OnlinePatterns::isFetchHelperRequested())
+		return 0;
+
 	if (std::string(map->l_name).ends_with("/steamclient.so") || std::string(map->l_name).ends_with("/steamui.so"))
 	{
 		load();
@@ -232,6 +236,9 @@ unsigned int la_objopen(struct link_map *map, __attribute__((unused)) Lmid_t lmi
 
 void la_preinit(__attribute__((unused)) uintptr_t *cookie)
 {
+	if (OnlinePatterns::isFetchHelperRequested())
+		_exit(OnlinePatterns::runFetchHelper());
+
 	setup();
 }
 

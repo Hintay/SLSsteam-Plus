@@ -139,7 +139,11 @@ class CLog
 public:
 	std::string path;
 
-	CLog(const char* path);
+	// truncate=true wipes the file at open (parent's per-Steam-session reset).
+	// truncate=false opens in append mode (O_APPEND) — required when a child
+	// process (e.g., OnlinePatterns helper) re-opens the parent's log file:
+	// per-write atomicity from the kernel keeps both processes' lines intact.
+	CLog(const char* path, bool truncate = true);
 	~CLog();
 
 	template<typename ...Args>
@@ -182,6 +186,9 @@ public:
 	static LogLevel getMinLevel();
 	static bool shouldNotify();
 	static CLog* createDefaultLog();
+	// Same path as createDefaultLog but append-only. Use this when an
+	// already-running SLSsteam session may also be writing to the file.
+	static CLog* createDefaultAppendLog();
 };
 
 extern std::unique_ptr<CLog> g_pLog;

@@ -72,6 +72,10 @@ bool Patterns::init()
 
 	if (needsOnline && g_config.onlinePatterns.get())
 	{
+		// Keep online recovery synchronous so Hooks::setup() sees recovered
+		// addresses. The fetch itself is isolated in a short-lived self-helper
+		// process, avoiding parent-process DNS/NSS dlopen while la_objopen holds
+		// ld.so's loader lock.
 		const auto ov = OnlinePatterns::fetchAndParse();
 		if (ov.usable)
 		{

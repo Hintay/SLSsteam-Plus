@@ -5,9 +5,12 @@
 #include <cstdlib>
 #include <memory>
 
-CLog::CLog(const char* path) : path(path)
+CLog::CLog(const char* path, bool truncate) : path(path)
 {
-	ofstream = std::ofstream(path, std::ios::out);
+	const auto mode = truncate
+		? (std::ios::out | std::ios::trunc)
+		: (std::ios::out | std::ios::app);
+	ofstream = std::ofstream(path, mode);
 	if (!ofstream.is_open())
 	{
 		throw std::runtime_error("Unable to open logfile!");
@@ -41,7 +44,21 @@ CLog* CLog::createDefaultLog()
 		std::stringstream ss;
 		ss << home << "/.SLSsteam.log";
 
-		return new CLog(ss.str().c_str());
+		return new CLog(ss.str().c_str(), /*truncate=*/true);
+	}
+
+	return nullptr;
+}
+
+CLog* CLog::createDefaultAppendLog()
+{
+	const char* home = getenv("HOME");
+	if (home)
+	{
+		std::stringstream ss;
+		ss << home << "/.SLSsteam.log";
+
+		return new CLog(ss.str().c_str(), /*truncate=*/false);
 	}
 
 	return nullptr;

@@ -25,5 +25,7 @@ namespace OnlinePatterns
 		std::map<std::string, std::vector<VersionedHash>> ipcHashes;
 	};
 
+	bool isFetchHelperRequested();
+	int runFetchHelper();
 	Overrides fetchAndParse();
 }
