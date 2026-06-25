@@ -176,6 +176,11 @@ static void load()
 	);
 	Diagnostics::logStartupModuleSummary();
 
+	// Spawn the config-file FileWatcher here (not in g_config.init()) so the
+	// watch thread is created inside Steam's main() context — la_preinit
+	// threads don't survive Steam's startup.
+	g_config.startWatcher();
+
 	// Initialize the Lua VM and execute all .lua plugin files.
 	// Called here — after g_modSteamClient.path is populated (needed by getSteamRoot)
 	// and after g_config is loaded (Lua.Paths and Manifest.Providers are already parsed).

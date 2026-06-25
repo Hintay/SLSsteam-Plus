@@ -822,15 +822,20 @@ static void collectAppIdDelta(const std::unordered_set<uint32_t>& previous,
 bool CConfig::init()
 {
 	migrateConfig(); // Try YAML→TOML conversion first (before createFile)
-	if(createFile()) // Creates from template only if config.toml doesn't exist
-	{
-		watcher = new CFileWatcher(onFileChange);
-		watcher->addFile(getPath().c_str());
-		watcher->start();
-	}
-
+	// FileWatcher spawn is deferred to startWatcher() (called from load() in
+	// main.cpp). Creating it here — during la_preinit — produces a watch
+	// thread that doesn't survive Steam's main() init.
+	createFile();
 	loadSettings();
 	return true;
+}
+
+void CConfig::startWatcher()
+{
+	if (watcher) return;
+	watcher = new CFileWatcher(onFileChange);
+	watcher->addFile(getPath().c_str());
+	watcher->start();
 }
 
 CConfig::~CConfig()

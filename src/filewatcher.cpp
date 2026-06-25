@@ -66,7 +66,14 @@ CFileWatcher::CFileWatcher(FileModifyEvent_t onModify)
 	this->onModify = onModify;
 
 	notifyFd = inotify_init();
-	g_pLog->debug("Created notify fd %i\n", notifyFd);
+	if (notifyFd == -1)
+	{
+		g_pLog->warn("inotify_init failed\n");
+	}
+	else
+	{
+		g_pLog->debug("Created notify fd %i\n", notifyFd);
+	}
 }
 
 CFileWatcher::~CFileWatcher()

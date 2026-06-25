@@ -101,6 +101,11 @@ public:
 	bool createFile();
 	void migrateConfig();
 	bool init();
+	// Spawn the config-file FileWatcher. Must be called from load() (after
+	// steamclient.so is mapped — i.e. inside Steam's main() context, not from
+	// la_preinit). pthread_create at la_preinit time produces threads that
+	// don't survive into Steam main, leaving the watch thread silently dead.
+	void startWatcher();
 	void shutdown();
 
 	bool loadSettings();
