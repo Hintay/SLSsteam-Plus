@@ -8,6 +8,7 @@
 #include "lua/ManifestProvider.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -937,7 +938,95 @@ bool CConfig::loadSettings()
 	appIds = getList<uint32_t>(node, "AppIds");
 	fakeOffline = getList<uint32_t>(node, "FakeOffline");
 
-	fakeAppIds = getMap<uint32_t, uint32_t>(node, "FakeAppIds");
+	// [FakeAppIds] hosts both a flat real→fake int map AND an optional
+	// [[FakeAppIds.Flags]] array of tables. getMap<uint32_t,uint32_t> can't
+	// handle the latter (non-integer key "Flags" trips stoul). Parse the
+	// table by hand: integer keys → map, "Flags" array → rule vector,
+	// anything else → __parseError.
+	{
+		std::unordered_map<uint32_t, uint32_t> map;
+		std::vector<FakeAppIdFlagRule> rules;
+		if (auto* tbl = node["FakeAppIds"].as_table()) {
+			for (const auto& [k, v] : *tbl) {
+				const std::string key(k.str());
+				if (key == "Flags") {
+					auto* arr = v.as_array();
+					if (!arr) {
+						g_pLog->warn("FakeAppIds.Flags is not an array of tables — ignored\n");
+						__parseError = true;
+						continue;
+					}
+					for (const auto& item : *arr) {
+						auto* row = item.as_table();
+						if (!row) {
+							g_pLog->warn("FakeAppIds.Flags: entry is not a table — skipped\n");
+							__parseError = true;
+							continue;
+						}
+						FakeAppIdFlagRule rule;
+						rule.flag = (*row)["Flag"].value_or(std::string(""));
+						auto fakeOpt = (*row)["FakeAppId"].value<int64_t>();
+						if (rule.flag.empty() || !fakeOpt || *fakeOpt <= 0
+						 || *fakeOpt > std::numeric_limits<uint32_t>::max()) {
+							g_pLog->warn("FakeAppIds.Flags: entry missing/invalid Flag or FakeAppId — skipped\n");
+							__parseError = true;
+							continue;
+						}
+						rule.fakeAppId = static_cast<uint32_t>(*fakeOpt);
+						auto loadAppList = [&](const char* field, std::unordered_set<uint32_t>& dst) {
+							if (auto* a = (*row)[field].as_array()) {
+								for (const auto& e : *a) {
+									auto val = e.value<int64_t>();
+									if (!val || *val < 0
+									 || *val > std::numeric_limits<uint32_t>::max()) {
+										g_pLog->warn("FakeAppIds.Flags \"%s\": %s entry is not a valid uint32 — skipped\n",
+											rule.flag.c_str(), field);
+										__parseError = true;
+										continue;
+									}
+									dst.emplace(static_cast<uint32_t>(*val));
+								}
+							}
+						};
+						loadAppList("Apps", rule.apps);
+						loadAppList("ExcludeApps", rule.excludeApps);
+						g_pLog->info("FakeAppIds.Flags: \"%s\" -> %u (apps=%zu exclude=%zu)\n",
+							rule.flag.c_str(), rule.fakeAppId, rule.apps.size(), rule.excludeApps.size());
+						rules.push_back(std::move(rule));
+					}
+				} else {
+					// Use from_chars instead of stoul: with -O3 -flto an out_of_range
+					// thrown by stoul (e.g. on `9999999999` from a 32-bit build)
+					// escaped the surrounding catch and aborted Steam at init.
+					// from_chars never throws — fail paths come back through ec.
+					uint64_t parsed = 0;
+					const char* begin = key.data();
+					const char* end = key.data() + key.size();
+					auto [ptr, ec] = std::from_chars(begin, end, parsed);
+					if (ec != std::errc() || ptr != end
+					 || parsed > std::numeric_limits<uint32_t>::max()) {
+						g_pLog->warn("FakeAppIds: key \"%s\" is neither an AppId nor \"Flags\" — ignored\n", key.c_str());
+						__parseError = true;
+						continue;
+					}
+					const uint32_t intKey = static_cast<uint32_t>(parsed);
+					// Reject non-int values (e.g. `2070270 = "abc"`) instead of
+					// silently mapping to 0 — that silently breaks the user's
+					// intended mapping with no signal that anything is wrong.
+					auto valOpt = v.value<int64_t>();
+					if (!valOpt || *valOpt < 0
+					 || *valOpt > std::numeric_limits<uint32_t>::max()) {
+						g_pLog->warn("FakeAppIds[%u]: value is not a valid uint32 — ignored\n", intKey);
+						__parseError = true;
+						continue;
+					}
+					map[intKey] = static_cast<uint32_t>(*valOpt);
+				}
+			}
+		}
+		fakeAppIds = std::move(map);
+		fakeAppIdFlags = std::move(rules);
+	}
 	gameTitles = getMap<uint32_t, std::string>(node, "GameTitles");
 	subscriptionTimestamps = getMap<uint32_t, uint32_t>(node, "SubscriptionTimestamps");
 

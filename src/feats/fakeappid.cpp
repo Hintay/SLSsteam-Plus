@@ -1,8 +1,10 @@
 #include "fakeappid.hpp"
 
 #include "apps.hpp"
+#include "launch_options.hpp"
 
 #include "../config.hpp"
+#include "../log.hpp"
 
 #include "../sdk/CProtoBufMsgBase.hpp"
 #include "../sdk/CSteamEngine.hpp"
@@ -10,7 +12,9 @@
 #include "../sdk/CUser.hpp"
 #include "../sdk/IClientUtils.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <mutex>
 
 namespace
 {
@@ -29,8 +33,25 @@ std::unordered_map<uint32_t, uint32_t> FakeAppIds::fakeAppIdMap = std::unordered
 std::unordered_map<uint32_t, uint32_t> FakeAppIds::fakeAppIdMapServer = std::unordered_map<uint32_t, uint32_t>();
 std::unordered_map<uint64_t, uint32_t> FakeAppIds::fakeAppIdMapPings = std::unordered_map<uint64_t, uint32_t>();
 
+namespace
+{
+	// Runtime real→fake overrides registered by FakeAppIds::onLaunchApp when a
+	// [[FakeAppIds.Flags]] rule matches. Consulted by getFakeAppId() ahead of
+	// the static [FakeAppIds] map. Mutex-protected because the hot read path
+	// (CSteamEngine pipe runs, CMsgClientGamesPlayed send) lands on Steam IPC
+	// threads while the write path is the LaunchApp hook on Steam's main thread.
+	std::mutex g_runtimeFakeMu;
+	std::unordered_map<uint32_t, uint32_t> g_runtimeFakeAppIds;
+}
+
 uint32_t FakeAppIds::getFakeAppId(uint32_t appId)
 {
+	{
+		std::lock_guard<std::mutex> lock(g_runtimeFakeMu);
+		auto it = g_runtimeFakeAppIds.find(appId);
+		if (it != g_runtimeFakeAppIds.end()) return it->second;
+	}
+
 	auto fakeAppIds = g_config.fakeAppIds.get();
 
 	if (fakeAppIds.contains(appId))
@@ -66,6 +87,49 @@ uint32_t FakeAppIds::getRealAppIdForCurrentPipe(bool fallback)
 void FakeAppIds::launchApp(uint32_t appId)
 {
 	lastAppLaunched = appId;
+}
+
+void FakeAppIds::onLaunchApp(uint32_t appId)
+{
+	const auto rules = g_config.fakeAppIdFlags.get();
+
+	// Always clear any prior runtime mapping for this appId so a re-launch
+	// without the flag falls back through to the static map.
+	{
+		std::lock_guard<std::mutex> lock(g_runtimeFakeMu);
+		g_runtimeFakeAppIds.erase(appId);
+	}
+
+	if (rules.empty()) return;
+
+	// Skip the LaunchOptions read if no rule could possibly apply (every rule
+	// has either an Apps allowlist that excludes appId or an ExcludeApps that
+	// includes it).
+	const bool anyApplicable = std::any_of(rules.begin(), rules.end(),
+		[appId](const CConfig::FakeAppIdFlagRule& r) {
+			if (!r.apps.empty() && !r.apps.contains(appId)) return false;
+			if (r.excludeApps.contains(appId)) return false;
+			return !r.flag.empty();
+		});
+	if (!anyApplicable) return;
+
+	const std::string launchOpts = LaunchOptions::forApp(appId);
+	if (launchOpts.empty()) return;
+
+	for (const auto& rule : rules) {
+		if (rule.flag.empty() || !rule.fakeAppId) continue;
+		if (!rule.apps.empty() && !rule.apps.contains(appId)) continue;
+		if (rule.excludeApps.contains(appId)) continue;
+		if (!LaunchOptions::flagAppearsIn(launchOpts, rule.flag)) continue;
+
+		{
+			std::lock_guard<std::mutex> lock(g_runtimeFakeMu);
+			g_runtimeFakeAppIds[appId] = rule.fakeAppId;
+		}
+		g_pLog->info("FakeAppIds: appId %u -> %u (Flag=\"%s\" from LaunchOptions)\n",
+			appId, rule.fakeAppId, rule.flag.c_str());
+		return;
+	}
 }
 
 void FakeAppIds::setAppIdForCurrentPipe(uint32_t& appId)

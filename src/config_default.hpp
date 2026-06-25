@@ -75,6 +75,17 @@ LogLevel = 2
 # Use 0 as a key to set for all unowned Apps.
 # Example: { 440 = 730 }
 #[FakeAppIds]
+#
+# [[FakeAppIds.Flags]] entries gate a real -> fake mapping behind a Steam
+# launch option, evaluated at LaunchApp time. Useful for setups where the
+# mapping should only apply when a specific launch mode (e.g. -onlinefix) is
+# selected. Apps/ExcludeApps are optional scopes; omit both to match any app.
+# Example:
+#   [[FakeAppIds.Flags]]
+#   Flag = "-onlinefix"
+#   FakeAppId = 480
+#   Apps = [12345]
+#   #ExcludeApps = [99999]
 
 # Extra Data for DLCs belonging to a specific AppId. Only needed
 # when the App you're playing is hit by Steam's 64 DLC limit.

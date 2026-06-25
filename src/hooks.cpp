@@ -727,6 +727,7 @@ static void* hkClientAppManager_LaunchApp(void* pClientAppManager, uint32_t* pAp
 		);
 
 		FakeAppIds::launchApp(*pAppId);
+		FakeAppIds::onLaunchApp(*pAppId);
 		Ticket::launchApp(*pAppId);
 		ProtonInject::onLaunchApp(*pAppId);
 	}

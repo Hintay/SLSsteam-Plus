@@ -21,6 +21,15 @@ namespace FakeAppIds
 
 	//General functionality
 	void launchApp(uint32_t appId);
+
+	// Called from the IClientAppManager::LaunchApp hook. Reads the user's
+	// "Launch Options" string (via the shared LaunchOptions::forApp helper)
+	// once per launch and, if any [[FakeAppIds.Flags]] rule matches, registers
+	// a runtime real→fake mapping that getFakeAppId() consults before the
+	// static config map. Idempotent per appId: each call first clears the
+	// existing runtime entry for `appId`, so removing a flag (or removing the
+	// rule from config) takes effect on the next launch without restart.
+	void onLaunchApp(uint32_t appId);
 	void setAppIdForCurrentPipe(uint32_t& appId);
 	void runIPCFrame(bool post);
 
