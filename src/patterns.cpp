@@ -2,8 +2,6 @@
 #include "config.hpp"
 #include "driftreport.hpp"
 #include "globals.hpp"
-#include "ipchash.gen.hpp"
-#include "ipcoutbound.hpp"
 #include "log.hpp"
 #include "onlinepatterns.hpp"
 #include "steamversion.hpp"
@@ -58,18 +56,6 @@ bool Patterns::init()
 	}
 
 	bool needsOnline = !failed.empty() || !optionalFailed.empty();
-	if (!needsOnline)
-	{
-		for (const auto h : IpcHash::kAllBaked)
-		{
-			if (!IpcOutbound::hasHash(h))
-			{
-				g_pLog->info("Patterns: baked funcHash 0x%08x not found in .text, fetching online\n", h);
-				needsOnline = true;
-				break;
-			}
-		}
-	}
 
 	if (needsOnline && g_config.onlinePatterns.get())
 	{
@@ -80,9 +66,6 @@ bool Patterns::init()
 		const auto ov = OnlinePatterns::fetchAndParse();
 		if (ov.usable)
 		{
-			if (!ov.ipcHashes.empty())
-				IpcOutbound::setOnlineHashes(ov.ipcHashes);
-
 			if (!failed.empty() || !optionalFailed.empty())
 			{
 				g_pLog->info("Patterns: %zu required + %zu optional unresolved, trying online override\n",

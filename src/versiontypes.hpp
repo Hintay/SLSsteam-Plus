@@ -3,15 +3,8 @@
 #include <cstdint>
 #include <vector>
 
-// Shared version-selection types used by both online pattern overrides and
-// IpcOutbound hash resolution. Kept in a lightweight header to avoid pulling
-// memhlp / libmem / log into every consumer.
-
-struct VersionedHash
-{
-	uint32_t hash;
-	uint32_t maxVersion = 0;   // 0 = latest (no upper bound)
-};
+// Helper used by patterns.cpp to pick the right OnlinePatterns::Entry for the
+// current Steam version when multiple version-bounded entries are present.
 
 // Pick the best item from a versioned list for a given Steam version.
 // Returns nullptr if no entry covers `ver`.

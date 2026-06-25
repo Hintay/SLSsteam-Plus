@@ -340,46 +340,6 @@ namespace
 		}
 	}
 
-	// Parse an IPC func_hash value. Scalar int -> single hash (maxVersion=0).
-	// Table with "current" + version keys -> versioned hashes.
-	void parseIpcHashValue(const toml::node& val, std::vector<VersionedHash>& vec)
-	{
-		if (auto v = val.value<int64_t>())
-		{
-			vec.push_back({ static_cast<uint32_t>(*v), 0 });
-		}
-		else if (auto* tbl = val.as_table())
-		{
-			for (const auto& [vk, vv] : *tbl)
-			{
-				auto h = vv.value<int64_t>();
-				if (!h) continue;
-				uint32_t maxVer;
-				if (!parseVersionKey(std::string(vk.str()), maxVer)) continue;
-				vec.push_back({ static_cast<uint32_t>(*h), maxVer });
-			}
-		}
-	}
-
-	void parseIpcMethods(const toml::table& ipcMethods, std::map<std::string, std::vector<VersionedHash>>& out)
-	{
-		for (const auto& [ifaceKey, ifaceVal] : ipcMethods)
-		{
-			const std::string ifaceName(ifaceKey.str());
-			const auto* methods = ifaceVal.as_table();
-			if (!methods) continue;
-			for (const auto& [mKey, mVal] : *methods)
-			{
-				const auto* spec = mVal.as_table();
-				if (!spec) continue;
-				const auto* hash = spec->get("func_hash");
-				if (!hash) continue;
-				const std::string fullKey = ifaceName + "::" + std::string(mKey.str());
-				parseIpcHashValue(*hash, out[fullKey]);
-			}
-		}
-	}
-
 }
 
 OnlinePatterns::Overrides OnlinePatterns::fetchAndParse()
@@ -418,12 +378,8 @@ OnlinePatterns::Overrides OnlinePatterns::fetchAndParse()
 			}
 		}
 
-		if (auto* ipcMethods = root["IpcMethods"].as_table())
-			parseIpcMethods(*ipcMethods, ov.ipcHashes);
-
 		ov.usable = true;
-		g_pLog->info("OnlinePatterns: parsed %zu pattern entries, %zu IPC method hashes\n",
-			ov.byName.size(), ov.ipcHashes.size());
+		g_pLog->info("OnlinePatterns: parsed %zu pattern entries\n", ov.byName.size());
 	}
 	catch (...)
 	{

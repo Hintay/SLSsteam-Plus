@@ -23,10 +23,6 @@ follow = "None"
 optional = true
 pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 81 EC DC 00 00 00 89 85 50 FF FF FF 8B 45 10 89 85 40 FF FF FF 8B 45 08 8B 40 04"
 
-[Patterns.steamclient."TraceIPC"]
-follow = "Relative"
-pattern = "E8 ? ? ? ? 83 C4 10 85 FF 74 ? 8B 07 83 EC 04 FF B5 ? ? ? ? FF B5 ? ? ? ? 57 FF 10 83 C4 10 8D 45 ? 83 EC 04 89 F3 6A 04 50 FF 75"
-
 [Patterns.steamclient."CAPIJob::GetPlayerStats"]
 follow = "Relative"
 pattern = "E8 ? ? ? ? 83 C4 10 89 C5 E9 ? ? ? ? ? ? 80 BE ? ? ? ? 00"
@@ -214,70 +210,3 @@ pattern = "55 89 E5 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 81 EC 8C 00 00 00 8B 7D 08
 follow = "None"
 pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C 8B 5D 10 8B 75 0C 89 45 D4 8B 80 E0 09 00 00 85 DB 0F 94 C1"
 
-[IpcMethods.IClientAppManager.InstallApp]
-vft_index = 0
-func_hash = 0xDD9AF17B
-
-[IpcMethods.IClientAppManager.LaunchApp]
-vft_index = 2
-func_hash = { current = 0x04BABDC2, 1781041600 = 0x0F248F79 }
-
-[IpcMethods.IClientAppManager.GetAppInstallState]
-vft_index = 4
-func_hash = 0xEAF26182
-
-[IpcMethods.IClientAppManager.IsAppDlcInstalled]
-vft_index = 9
-func_hash = { current = 0xCDBD8C71, 1781041600 = 0xCDBD8C0F }
-
-[IpcMethods.IClientAppManager.BIsDlcEnabled]
-vft_index = 11
-func_hash = { current = 0x143D4541, 1781041600 = 0x143D4543 }
-
-[IpcMethods.IClientAppManager.GetUpdateInfo]
-vft_index = 20
-func_hash = { current = 0x27B7A573, 1781041600 = 0x27B7A57D }
-
-[IpcMethods.IClientApps.GetAppData]
-vft_index = 0
-func_hash = 0x87D25D33
-
-[IpcMethods.IClientApps.GetAppDataSection]
-vft_index = 5
-func_hash = 0x53CE8E2E
-
-[IpcMethods.IClientApps.RequestAppInfoUpdate]
-vft_index = 7
-func_hash = 0xAD30CD4B
-
-[IpcMethods.IClientApps.GetDLCCount]
-vft_index = 8
-func_hash = { current = 0x6EFFB354, 1781041600 = 0x6EFFB356 }
-
-[IpcMethods.IClientApps.GetDLCDataByIndex]
-vft_index = 9
-func_hash = { current = 0xA6889C37, 1781041600 = 0xA6889C39 }
-
-[IpcMethods.IClientApps.GetAppType]
-vft_index = 10
-func_hash = 0xDBD7CF03
-
-[IpcMethods.IClientRemoteStorage.IsCloudEnabledForApp]
-vft_index = 24
-func_hash = { current = 0x8712DD4A, 1781041600 = 0x88A72792 }
-
-[IpcMethods.IClientRemoteStorage.SetCloudEnabledForApp]
-vft_index = 25
-func_hash = 0x2EAADA14
-
-[IpcMethods.IClientUser.GetSteamID]
-vft_index = 10
-func_hash = 0xD6FC3200
-
-[IpcMethods.IClientUtils.GetOfflineMode]
-vft_index = 17
-func_hash = 0xD1D2D9CF
-
-[IpcMethods.IClientUtils.GetAppId]
-vft_index = 19
-func_hash = 0x09607EC4

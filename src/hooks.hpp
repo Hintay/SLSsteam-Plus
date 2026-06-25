@@ -51,6 +51,7 @@ public:
 	virtual void remove();
 
 	bool setup(const Pattern_t& pattern, T hookFn);
+	bool setup(const char* name, lm_address_t address, T hookFn);
 };
 
 template<typename T>
@@ -71,8 +72,6 @@ public:
 
 namespace Hooks
 {
-	typedef void(*TraceIPC_t)(const char*, const char*);
-
 	typedef void(*IClientAppManager_RunIPCFrame_t)(void*, void*, void*, void*);
 	typedef void(*IClientApps_RunIPCFrame_t)(void*, void*, void*, void*);
 	typedef void(*IClientRemoteStorage_RunIPCFrame_t)(void*, void*, void*, void*);
@@ -134,8 +133,6 @@ namespace Hooks
 	typedef void* (*CSteamUI_FillInAppOverview_t)(void*, void*, void**);
 	extern DetourHook<CSteamUI_FillInAppOverview_t> CSteamUIAppController_FillInAppOverview;
 
-	extern DetourHook<TraceIPC_t> TraceIPC;
-
 	extern DetourHook<LoadDepotDecryptionKey_t> LoadDepotDecryptionKey;
 	extern DetourHook<BuildDepotDependency_t> BuildDepotDependency;
 	extern DetourHook<BUpdateAppDownloadPlan_t> BUpdateAppDownloadPlan;
@@ -182,7 +179,7 @@ namespace Hooks
 	typedef void*(*IClientAppManager_LaunchApp_t)(void*, uint32_t*, void*, void*, void*);
 	typedef bool(*IClientAppManager_IsAppDlcInstalled_t)(void*, uint32_t, uint32_t);
 	typedef unsigned int(*IClientApps_GetDLCCount_t)(void*, uint32_t);
-	typedef bool(*IClientApps_GetDLCDataByIndex_t)(void*, uint32_t, int, uint32_t*, bool*, char*, size_t);
+	typedef bool(*IClientApps_BGetDLCDataByIndex_t)(void*, uint32_t, int, uint32_t*, bool*, char*, size_t);
 	typedef bool(*IClientRemoteStorage_IsCloudEnabledForApp_t)(void*, uint32_t);
 	typedef uint32_t(*IClientUtils_GetAppId_t)(void*);
 	typedef uint32_t(*CConfigStore_WriteVdfFile_t)(void*, uint32_t, uint32_t, void*, const char*, uint32_t);
@@ -192,7 +189,7 @@ namespace Hooks
 	extern VFTHook<IClientAppManager_LaunchApp_t> IClientAppManager_LaunchApp;
 	extern VFTHook<IClientAppManager_IsAppDlcInstalled_t> IClientAppManager_IsAppDlcInstalled;
 
-	extern VFTHook<IClientApps_GetDLCDataByIndex_t> IClientApps_GetDLCDataByIndex;
+	extern VFTHook<IClientApps_BGetDLCDataByIndex_t> IClientApps_BGetDLCDataByIndex;
 	extern VFTHook<IClientApps_GetDLCCount_t> IClientApps_GetDLCCount;
 
 	extern VFTHook<IClientRemoteStorage_IsCloudEnabledForApp_t> IClientRemoteStorage_IsCloudEnabledForApp;

@@ -16,7 +16,6 @@ namespace
 	enum class Kind
 	{
 		VFTStatic,
-		VFTDynamic,
 		PatternMissing,
 	};
 
@@ -38,9 +37,9 @@ namespace
 
 	void schedule()
 	{
-		// Single deferred flush; re-armable after each emit so late-arriving
-		// drift (e.g., a dynamic TraceIPC mismatch fired by a game launch hours
-		// in) gets its own batched report instead of being lost.
+		// Single deferred flush; re-armable after each emit so late-arriving drift
+		// (e.g. an OnlinePatterns fetch hours into a session that still can't
+		// resolve a signature) gets its own batched report instead of being lost.
 		if (g_scheduled.exchange(true, std::memory_order_acq_rel))
 			return;
 
@@ -66,13 +65,12 @@ namespace
 		if (!g_pLog)
 			return;
 
-		size_t vftStatic = 0, vftDynamic = 0, patReq = 0, patOpt = 0;
+		size_t vftStatic = 0, patReq = 0, patOpt = 0;
 		for (const auto& e : batch)
 		{
 			switch (e.kind)
 			{
 				case Kind::VFTStatic:      ++vftStatic;  break;
-				case Kind::VFTDynamic:     ++vftDynamic; break;
 				case Kind::PatternMissing: (e.optional ? ++patOpt : ++patReq); break;
 			}
 		}
@@ -80,23 +78,13 @@ namespace
 		std::stringstream ss;
 		ss << "steamclient drift detected — " << batch.size() << " issue(s):\n";
 
-		if (vftStatic + vftDynamic > 0)
+		if (vftStatic > 0)
 		{
-			ss << "  VFThook drift (" << (vftStatic + vftDynamic)
-			   << "): wrong vtable slot, hook skipped or removed.\n";
+			ss << "  VFThook drift (" << vftStatic
+			   << "): vtable slot not resolved, hook skipped.\n";
 			for (const auto& e : batch)
-			{
 				if (e.kind == Kind::VFTStatic)
-				{
-					ss << "    [vtable " << e.index << "] " << e.name
-					   << "  -> pool says '" << e.actual << "' (static, skipped)\n";
-				}
-				else if (e.kind == Kind::VFTDynamic)
-				{
-					ss << "    [runtime]    " << e.name
-					   << "  -> TraceIPC saw '" << e.actual << "' (removed)\n";
-				}
-			}
+					ss << "    " << e.name << "  -> " << e.actual << "\n";
 		}
 
 		if (patReq + patOpt > 0)
@@ -108,7 +96,8 @@ namespace
 					ss << "    " << (e.optional ? "[opt]" : "[REQ]") << " " << e.name << "\n";
 		}
 
-		ss << "Fix: update res/patterns.toml (vft_index for VFThook drift; pattern signatures for misses), rebuild or wait for OnlinePatterns fetch.";
+		ss << "Fix: check VtableScan iface whitelist and method names against the live steamclient binary, "
+		      "or update res/patterns.toml signatures for pattern misses (rebuild or wait for OnlinePatterns fetch).";
 
 		// Debug-level: developer-facing only, no notify-send popup. End users see no
 		// drift noise; flip LogLevel to 1 (Debug) to surface during diagnosis.
@@ -126,27 +115,6 @@ void DriftReport::pushStaticVFTMismatch(const char* hookName, unsigned int index
 			index,
 			expected ? expected : "",
 			actualAtIndex ? actualAtIndex : "",
-			false
-		});
-	}
-	schedule();
-}
-
-void DriftReport::pushDynamicVFTMismatch(const char* hookName, const char* expected, const char* actualIface, const char* actualFn)
-{
-	std::string combined;
-	if (actualIface) combined.append(actualIface);
-	combined.append("::");
-	if (actualFn) combined.append(actualFn);
-
-	{
-		std::lock_guard<std::mutex> lk(g_mtx);
-		g_entries.push_back({
-			Kind::VFTDynamic,
-			hookName ? hookName : "",
-			0,
-			expected ? expected : "",
-			std::move(combined),
 			false
 		});
 	}

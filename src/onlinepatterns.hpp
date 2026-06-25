@@ -1,7 +1,6 @@
 #pragma once
 
 #include "memhlp.hpp"
-#include "versiontypes.hpp"
 
 #include <cstdint>
 #include <map>
@@ -22,7 +21,6 @@ namespace OnlinePatterns
 	{
 		bool usable = false;
 		std::map<std::string, std::vector<Entry>> byName;
-		std::map<std::string, std::vector<VersionedHash>> ipcHashes;
 	};
 
 	bool isFetchHelperRequested();

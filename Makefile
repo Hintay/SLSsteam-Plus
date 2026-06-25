@@ -23,7 +23,7 @@ PATTERN_GEN_STAMP := src/.patterns-gen.stamp
 $(PATTERN_GEN_STAMP): res/patterns.toml tools/gen_patterns.py
 	$(PYTHON) tools/gen_patterns.py res/patterns.toml src
 	@touch $@
-src/patterns.gen.hpp src/patterns.gen.cpp src/ipchash.gen.hpp src/vftableinfo.gen.hpp: $(PATTERN_GEN_STAMP)
+src/patterns.gen.hpp src/patterns.gen.cpp: $(PATTERN_GEN_STAMP)
 $(objs): | $(PATTERN_GEN_STAMP)
 
 # Lua 5.4 is fetched at build time (checksum-verified, NOT committed to git) and

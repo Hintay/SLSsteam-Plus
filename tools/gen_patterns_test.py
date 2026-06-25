@@ -21,18 +21,15 @@ pattern = "AA BB"
 follow = "Relative"
 optional = true
 pattern = "E8 ? ? ? ?"
+'''
 
+# Older [IpcMethods.*] entries are no longer used (vtable indices + funcHashes are
+# resolved at runtime by VtableScan from steamclient.so's RTTI). They're tolerated
+# silently in patterns.toml so an unmigrated file doesn't break the build.
+LEGACY_IPC_METHODS_TAIL = '''
 [IpcMethods.IClientApps.GetAppData]
 vft_index = 0
 func_hash = 0x87D25D33
-
-[IpcMethods.IClientApps.GetDLCCount]
-vft_index = { current = 8, 1781041600 = 8 }
-func_hash = 0x6EFFB356
-
-[IpcMethods.IClientApps.UnknownCurrentHash]
-vft_index = 11
-func_hash = 0
 '''
 
 def run(toml_text):
@@ -65,22 +62,19 @@ def test_generates_expected_symbols():
     assert '"CSteamEngine::PostCallback"' in cpp, "name field must be used as Pattern_t name string"
     assert '"CUser::PostCallback"' not in cpp, "key must not bleed through as name string when name: is set"
 
-    ipch = open(os.path.join(d, "ipchash.gen.hpp")).read()
-    assert "kGetAppData = 0x87d25d33" in ipch, "hash constant must be emitted"
-    assert 'kGetAppData_Name = "IClientApps::GetAppData"' in ipch, "name constant must be emitted"
-    assert "kGetDLCCount" in ipch, "all IpcMethods entries must appear"
-    assert "kUnknownCurrentHash = 0x00000000" in ipch, "unknown current hash constant must be emitted"
-    assert "0x00000000" not in ipch[ipch.index("kAllBaked"):], "unknown current hash must not be checked globally"
-    assert "namespace IClientApps" in ipch
+    # Stale headers must NOT be emitted any more.
+    assert not os.path.exists(os.path.join(d, "ipchash.gen.hpp")), \
+        "ipchash.gen.hpp must not be emitted (vtable scan handles funcHashes)"
+    assert not os.path.exists(os.path.join(d, "vftableinfo.gen.hpp")), \
+        "vftableinfo.gen.hpp must not be emitted (vtable scan handles indices)"
 
-    vfti = open(os.path.join(d, "vftableinfo.gen.hpp")).read()
-    assert "namespace VFTIndexes" in vfti, "vtable index namespace must be emitted"
-    assert '#include "steamversion.hpp"' in vfti, "versioned vtable indexes need SteamVersion"
-    assert "static inline int GetAppData() { return 0; }" in vfti, "scalar vtable index must be emitted as selector function"
-    assert "static inline int GetDLCCount()" in vfti, "versioned vtable index must be emitted as selector function"
-    assert "VersionedIndex kEntries[]" in vfti, "versioned vtable index table must be emitted"
-    assert "{ 8, 0 }" in vfti, "current vtable index must be emitted"
-    assert "{ 8, 1781041600 }" in vfti, "bounded vtable index must be emitted"
+def test_legacy_ipc_methods_is_ignored():
+    """An unmigrated patterns.toml with [IpcMethods.*] blocks must still generate
+    cleanly — the codegen ignores the section instead of failing."""
+    r, d = run(SAMPLE + LEGACY_IPC_METHODS_TAIL)
+    assert r.returncode == 0, r.stderr
+    assert os.path.exists(os.path.join(d, "patterns.gen.hpp"))
+    assert os.path.exists(os.path.join(d, "patterns.gen.cpp"))
 
 def test_bad_toml_fails():
     r, _ = run("Patterns = 'not a table'")
@@ -98,6 +92,7 @@ def test_escapes_special_chars():
 
 if __name__ == "__main__":
     test_generates_expected_symbols()
+    test_legacy_ipc_methods_is_ignored()
     test_bad_toml_fails()
     test_escapes_special_chars()
     print("gen_patterns_test OK")
