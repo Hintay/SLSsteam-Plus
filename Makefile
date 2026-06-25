@@ -325,6 +325,13 @@ bin/sls_proton_inject.so: $(PROTON_INJECT_SRCS) $(PROTON_INJECT_HDRS)
 	$(HOST_CXX) -shared -fPIC -O2 -Wall -Wextra -Wpedantic \
 		-std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics \
 		-o $@ $(PROTON_INJECT_SRCS)
+	@# Sanity check: Wine's 64-bit ld.so silently rejects a 32-bit helper
+	@# loaded via LD_PRELOAD, so a successful-looking but 32-bit build would
+	@# pass through to runtime as a no-op injection. shell.nix pins HOST_CXX
+	@# to the 64-bit g++; this guard catches any other way of breaking that.
+	@file $@ | grep -q "ELF 64-bit" || { \
+		echo "ERROR: $@ is not 64-bit ELF (HOST_CXX=$(HOST_CXX) produced a 32-bit object)"; \
+		file $@; rm -f $@; exit 1; }
 
 tools/ticket-grabber/bin/Release/net9.0/linux-x64/publish/ticket-grabber:
 	sh tools/ticket-grabber/build.sh
