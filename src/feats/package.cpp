@@ -147,6 +147,7 @@ static bool appendAppIdGrowing(CUtlVector<uint32_t>* vec, uint32_t appId)
 
 void setInjectedPackage(void* pkg) { g_pkg.store(pkg, std::memory_order_release); }
 void setCUser(void* cuser)         { g_cuser.store(cuser, std::memory_order_release); }
+void* getCUser()                   { return g_cuser.load(std::memory_order_acquire); }
 
 void queueAppIdChanges(const std::vector<uint32_t>& additions, const std::vector<uint32_t>& removals)
 {

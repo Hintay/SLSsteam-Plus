@@ -95,16 +95,17 @@ LogLevel = 2
 #[DenuvoGames]
 
 # Inject a pre-compiled Windows DLL into Proton game processes.
-# Hooks NtCreateUserProcess via LD_PRELOAD and calls LdrLoadDll in
-# child processes to load the DLL. Only non-system processes
-# (outside \windows\) are injected.
+# Uses an LD_PRELOAD'd 64-bit helper inside each Wine PE process that
+# detours ntdll!LdrLoadDll and calls it for the configured DLL the first
+# time the host loads steam_api64.dll / steamclient.dll (i.e. the game
+# process that just called SteamAPI_Init).
 # Path: absolute Linux path to the DLL (Wine accesses it directly).
 # Apps: list of AppIds to inject into (optional if Flag is set).
 # Flag: a Steam launch option (e.g. "-onlinefix") that triggers injection.
 #   Any game launched with this flag will inject the DLL; the flag is
 #   stripped from argv before the game sees it. Apps and Flag can coexist.
-# Requires sls_proton_inject.so next to SLSsteam.so.
-# Dir is optional: override where sls_proton_inject.so is searched.
+# Requires sls_proton_inject.so. Searched next to SLSsteam.so, then under
+# /usr/lib and /usr/lib64; set Dir to override the search path.
 # Examples:
 #   [ProtonInject]
 #   #Dir = "/custom/path"

@@ -13,6 +13,9 @@
 
 #include "fakeappid.hpp"
 #include "package.hpp"
+#include "protoninject.hpp"
+
+#include <unordered_set>
 
 bool Apps::applistRequested;
 std::map<uint32_t, int> Apps::appIdOwnerOverride;
@@ -226,6 +229,10 @@ void Apps::sendGamesPlayed(CMsgClientGamesPlayed* msg)
 	auto titles = g_config.gameTitles.get();
 	bool owned = false;
 
+	// Build a snapshot of currently-running app ids for ProtonInject's
+	// GamesPlayed-diff cleanup path (covers Steam-overlay "Exit Game").
+	std::unordered_set<uint32_t> runningAppIds;
+
 	for(int i = 0; i < msg->games_played_size(); i++)
 	{
 		auto game = CMsgClientGamesPlayed_GamePlayed(msg->games_played(i));
@@ -234,6 +241,8 @@ void Apps::sendGamesPlayed(CMsgClientGamesPlayed* msg)
 		{
 			continue;
 		}
+
+		runningAppIds.insert(static_cast<uint32_t>(game.game_id()));
 
 		if(!owned && isGenuinelySubscribed(game.game_id()))
 		{
@@ -261,6 +270,8 @@ void Apps::sendGamesPlayed(CMsgClientGamesPlayed* msg)
 
 		g_pLog->debug("Playing game %llu with flags %u & pid %u\n", game.game_id(), game.game_flags(), game.process_id());
 	}
+
+	ProtonInject::onGamesPlayedUpdate(runningAppIds);
 
 	if (owned || msg->games_played_size() > 0)
 	{

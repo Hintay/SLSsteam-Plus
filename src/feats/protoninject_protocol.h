@@ -38,17 +38,6 @@ static inline uint32_t sls_proton_select_app_id(const char *explicit_app_id,
 	return sls_proton_parse_app_id(steam_game_id);
 }
 
-static inline int sls_proton_build_decimal(char *out, size_t out_size, uint32_t value)
-{
-	if (!out || out_size == 0) return 0;
-	const int written = snprintf(out, out_size, "%u", value);
-	if (written < 0 || (size_t)written >= out_size) {
-		out[0] = '\0';
-		return 0;
-	}
-	return 1;
-}
-
 static inline int sls_proton_build_socket_name(char *out, size_t out_size, const char *token)
 {
 	if (!out || out_size == 0 || !token || !*token) return 0;

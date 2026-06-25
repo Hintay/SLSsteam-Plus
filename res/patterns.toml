@@ -84,6 +84,12 @@ pattern = "55 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 83 EC 2C 8B 74 24 40 8B 44 24 48
 follow = "None"
 pattern = "55 E8 ? ? ? ? 81 C5 ? ? ? ? 57 56 53 83 EC 0C 8B 7C 24 20 8B B7 ? 1B 00 00 83 EE 01 79 0F EB 5D"
 
+# Offset inside CUser to the embedded per-user CConfigStore subobject
+[Patterns.steamclient."CUser::Offset_ConfigStore"]
+follow = "None"
+optional = true
+pattern = "8B 80 80 00 00 00 8D B0 ? ? ? ? 8B 80 ? ? ? ? 8B 40 14"
+
 [Patterns.steamclient."IClientAppManager::RunIPCFrame"]
 follow = "None"
 # Entry prologue + unique stack-frame size: sub esp, 0x780
@@ -209,4 +215,3 @@ pattern = "55 89 E5 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 81 EC 8C 00 00 00 8B 7D 08
 [Patterns.steamui."CUpdateManager::MarkAppChange"]
 follow = "None"
 pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C 8B 5D 10 8B 75 0C 89 45 D4 8B 80 E0 09 00 00 85 DB 0F 94 C1"
-

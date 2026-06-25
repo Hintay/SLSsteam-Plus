@@ -4,11 +4,16 @@
 #include "../config.hpp"
 #include "../globals.hpp"
 #include "../log.hpp"
+#include "../patterns.hpp"
+#include "../sdk/CSteamEngine.hpp"
+#include "package.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
 #include <elf.h>
@@ -23,6 +28,7 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <unistd.h>
 #include <vector>
 
@@ -47,6 +53,14 @@ namespace
 		}
 		if (!cfgDir.empty()) {
 			auto c = std::filesystem::path(cfgDir) / name;
+			if (std::filesystem::exists(c)) return c.string();
+		}
+		// FHS system locations. SLSsteam.so itself lives in /usr/lib32, but the
+		// helper is 64-bit and packagers (e.g. Arch PKGBUILD) follow FHS by
+		// installing it under /usr/lib (multilib-aware distros) or /usr/lib64
+		// (older paths). Probe both so the .pkg install works out of the box.
+		for (const char* dir : { "/usr/lib", "/usr/lib64" }) {
+			auto c = std::filesystem::path(dir) / name;
 			if (std::filesystem::exists(c)) return c.string();
 		}
 		return "";
@@ -112,9 +126,14 @@ namespace
 	using execvpe_fn = int(*)(const char*, char* const[], char* const[]);
 	execvpe_fn g_origExecvpe = nullptr;
 
+	// One token per app session, registered in onLaunchApp (= Steam main
+	// thread, pre-fork) so the child process running hooked_execvpe sees
+	// the token via its fork copy of memory. Registering POST-fork inside
+	// the child would write to the child's own g_pendingSessions, which
+	// the control-socket server (parent) never sees — the helper would
+	// always get DENY.
 	struct InjectEntry {
 		std::string dllPath;
-		std::string sessionToken;
 	};
 	struct FlagEntry {
 		std::string flag;
@@ -123,6 +142,7 @@ namespace
 	struct LaunchRules {
 		uint32_t appId = 0;
 		std::string helperSo;
+		std::string sessionToken; // single per-session token, pre-fork
 		std::unordered_map<uint32_t, InjectEntry> dllByApp;
 		std::vector<FlagEntry> dllByFlag;
 	};
@@ -144,6 +164,163 @@ namespace
 	bool startsWith(const char* value, const char* prefix)
 	{
 		return strncmp(value, prefix, strlen(prefix)) == 0;
+	}
+
+	// Query the user's "Set Launch Options..." string for an app via the
+	// per-user CConfigStore subobject embedded inside CUser at a
+	// version-dependent offset resolved at runtime from the
+	// CUser::Offset_ConfigStore pattern (see patterns.toml).
+	//
+	// localconfig.vdf stores this at
+	//   Software\Valve\Steam\Apps\<appid>\LaunchOptions
+	// inside store enum 3 (UserLocalConfigStore).
+	//
+	// Reverse-engineered from steamclient.so internal launch-app helper:
+	//   ctx = function arg                          ; CUserAppInfo*
+	//   pCUser     = *(void**)(ctx + 0x80)          ; per-user object
+	//   configThis = pCUser + <imm>                 ; embedded subobject (no deref)
+	//   vft        = *(void***)configThis
+	//   fn         = vft[5]                         ; offset 0x14
+	//   value      = fn(configThis, 3, key, "")     ; returns const char*
+	//
+	// The CUser* anchor is the same instance captured by
+	// hkUser_CheckAppOwnership into Package::setCUser.
+	using InternalConfigStoreGetString_t =
+		const char* (*)(void* this_, int store, const char* key, const char* defaultValue);
+
+	bool isSteamClientAddress(uintptr_t address)
+	{
+		const auto base = reinterpret_cast<uintptr_t>(g_modSteamClient.base);
+		return address >= base && address < base + g_modSteamClient.size;
+	}
+
+	uint32_t readUnalignedU32(lm_address_t address)
+	{
+		uint32_t value = 0;
+		memcpy(&value, reinterpret_cast<const void*>(address), sizeof(value));
+		return value;
+	}
+
+	void* resolveCUser()
+	{
+		void* pCUser = Package::getCUser();
+		if (pCUser) return pCUser;
+
+		if (!g_pSteamEngine) return nullptr;
+
+		pCUser = g_pSteamEngine->getUser(0);
+		if (pCUser) {
+			Package::setCUser(pCUser);
+			g_pLog->debug("ProtonInject: resolved CUser via CSteamEngine::getUser(0)\n");
+		}
+		return pCUser;
+	}
+
+	// Decode the imm32 offset from the matched CUser::Offset_ConfigStore byte
+	// sequence and sanity-check it. Returns 0 (with a warn) on any failure
+	// path so the caller can fall back to disabled launch-flag matching.
+	//
+	// The pattern brackets two redundant imm32 sites inside the launch-app
+	// helper's CConfigStore::GetConfigString callsite:
+	//
+	//   8B 80 80 00 00 00   ; mov eax, [eax+0x80]    (pCUser = *(ctx+0x80))
+	//   8D B0 ?? ?? ?? ??   ; lea esi, [eax+imm32]   ← imm32 #1 at base+0x08
+	//   8B 80 ?? ?? ?? ??   ; mov eax, [eax+imm32]   ← imm32 #2 at base+0x0e
+	//   8B 40 14            ; mov eax, [eax+0x14]    (vft[5])
+	//
+	// imm32 #1 and #2 must agree — they reference the same CConfigStore
+	// subobject. Mismatch is the signal that the compiler folded the pattern
+	// differently in a new Steam build and the offset needs re-RE'ing. Also
+	// reject implausibly large values so a false-positive match doesn't drive
+	// later vtable reads far outside the captured CUser object.
+	//
+	// Runs once via function-local static init at the first
+	// getUserLaunchOptions() call.
+	uintptr_t decodeConfigStoreOffset()
+	{
+		constexpr uint32_t kMaxReasonableConfigStoreOffset = 0x10000;
+		const lm_address_t base = Patterns::CUser::Offset_ConfigStore.address;
+		if (base == LM_ADDRESS_BAD) {
+			g_pLog->warn("ProtonInject: CUser::Offset_ConfigStore pattern not resolved — launch-flag matching disabled\n");
+			return 0;
+		}
+		const uint32_t imm1 = readUnalignedU32(base + 0x08);
+		const uint32_t imm2 = readUnalignedU32(base + 0x0e);
+		if (imm1 != imm2) {
+			g_pLog->warn("ProtonInject: CUser::Offset_ConfigStore imm mismatch 0x%x != 0x%x — pattern drift suspected\n",
+				imm1, imm2);
+			return 0;
+		}
+		if (!imm1 || imm1 > kMaxReasonableConfigStoreOffset) {
+			g_pLog->warn("ProtonInject: CUser::Offset_ConfigStore decoded implausible offset 0x%x — pattern drift suspected\n",
+				imm1);
+			return 0;
+		}
+		g_pLog->debug("ProtonInject: CUser+0x%x = CConfigStore (decoded from pattern @%p)\n",
+			imm1, reinterpret_cast<void*>(base));
+		return imm1;
+	}
+
+	// Sole caller is Steam's main thread via LaunchApp → buildLaunchRules.
+	// Static caches are read/written only on that thread, so no synchronization.
+	std::string getUserLaunchOptions(uint32_t appId)
+	{
+		static const uintptr_t offset = decodeConfigStoreOffset();
+		if (!offset) return "";
+
+		void* pCUser = resolveCUser();
+		if (!pCUser) {
+			g_pLog->debug("ProtonInject: CUser not available — falling back to empty launch options\n");
+			return "";
+		}
+
+		void* configThis = reinterpret_cast<char*>(pCUser) + offset;
+
+		// Cache (configThis, fn). Re-resolve only if pCUser changes
+		// (e.g. logout/login) — vtable[5] is otherwise stable for the
+		// process lifetime.
+		static void* s_configThis = nullptr;
+		static InternalConfigStoreGetString_t s_fn = nullptr;
+		if (s_configThis != configThis) {
+			auto vft = *reinterpret_cast<void***>(configThis);
+			void* fn = vft ? vft[5] : nullptr;
+			if (fn && !isSteamClientAddress(reinterpret_cast<uintptr_t>(fn))) {
+				g_pLog->warn("ProtonInject: CConfigStore vft[5]=%p outside steamclient — launch-flag matching disabled\n",
+					fn);
+				fn = nullptr;
+			}
+			s_fn = reinterpret_cast<InternalConfigStoreGetString_t>(fn);
+			s_configThis = configThis;
+		}
+		if (!s_fn) return "";
+
+		char key[160];
+		snprintf(key, sizeof(key),
+			"Software\\Valve\\Steam\\Apps\\%u\\LaunchOptions", appId);
+
+		const char* val = s_fn(configThis, 3, key, "");
+		g_pLog->debug("ProtonInject: CConfigStore::GetString(%u) -> \"%s\"\n",
+			appId, val ? val : "(null)");
+		return val ? std::string(val) : "";
+	}
+
+	// Word-boundary substring match: true if `needle` appears in `haystack`
+	// with whitespace/start-of-string/quote on both sides. Matches the same
+	// boundary logic used at execvpe argv search.
+	bool flagAppearsIn(const std::string& haystack, const std::string& needle)
+	{
+		if (needle.empty()) return false;
+		size_t pos = 0;
+		while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+			char before = (pos > 0) ? haystack[pos - 1] : ' ';
+			size_t end = pos + needle.size();
+			char after = (end < haystack.size()) ? haystack[end] : '\0';
+			if ((before == ' ' || before == '\t' || before == '"' || before == '\'') &&
+			    (after == '\0' || after == ' ' || after == '\t' || after == '"' || after == '\''))
+				return true;
+			pos = end;
+		}
+		return false;
 	}
 
 	const char* getEnvValue(char* const envp[], const char* name)
@@ -195,7 +372,7 @@ namespace
 		uint32_t appId = 0;
 		std::string helperSo;
 		std::string dllPath;
-		std::string sessionToken;
+		std::string sessionToken; // copied from rules (set by parent at buildLaunchRules)
 		int argIndex = -1;
 		size_t flagPos = 0;
 		size_t flagLen = 0;
@@ -204,7 +381,15 @@ namespace
 	struct PendingSession {
 		uint32_t appId = 0;
 		std::string dllPath;
+		int64_t createdAtSec = 0; // CLOCK_MONOTONIC seconds at registration
 	};
+
+	// Stale-token TTL. A token must outlive Wine's full PE-process tree spawn
+	// for the launch (services.exe / explorer.exe / the game itself); on a
+	// cold Proton prefix that can take a couple of minutes. 10 minutes is well
+	// past any realistic case while keeping g_pendingSessions bounded across
+	// many distinct game launches in one Steam session.
+	inline constexpr int64_t kPendingSessionTtlSec = 600;
 
 	std::mutex g_pendingSessionsMu;
 	std::unordered_map<std::string, PendingSession> g_pendingSessions;
@@ -243,31 +428,33 @@ namespace
 
 	void handleControlClient(int clientFd)
 	{
-		char token[128] = {};
-		ssize_t n = read(clientFd, token, sizeof(token) - 1);
+		char buf[160] = {};
+		ssize_t n = read(clientFd, buf, sizeof(buf) - 1);
 		if (n <= 0) {
 			close(clientFd);
 			return;
 		}
-		token[n] = '\0';
-		for (char* p = token; *p; ++p) {
-			if (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t') {
-				*p = '\0';
-				break;
-			}
+		buf[n] = '\0';
+		// Strip trailing whitespace/newline.
+		for (char* p = buf + strlen(buf); p > buf; --p) {
+			const char c = *(p - 1);
+			if (c == '\n' || c == '\r' || c == '\t' || c == ' ') *(p - 1) = '\0';
+			else break;
 		}
 
+		// Token-only resolve request. Multi-use within the launch
+		// (Wine spawns 20+ PE processes that all inherit the same token).
+		// Drop is driven entirely by the GamesPlayed-diff observer plus
+		// the TTL backstop, so this control socket has no client-initiated
+		// drop verb.
+		const char* token = buf;
 		PendingSession session;
 		bool found = false;
 		{
-			// Tokens are single-use: once a Wine child has resolved its DLL
-			// path the entry is no longer reachable, and replaying the same
-			// token shouldn't leak the path to anyone else. Erase on consume.
 			std::lock_guard<std::mutex> lock(g_pendingSessionsMu);
 			auto it = g_pendingSessions.find(token);
 			if (it != g_pendingSessions.end()) {
-				session = std::move(it->second);
-				g_pendingSessions.erase(it);
+				session = it->second;
 				found = true;
 			}
 		}
@@ -331,10 +518,6 @@ namespace
 
 	std::string registerPendingSession(uint32_t appId, const std::string& dllPath)
 	{
-		// Sequence counter is incremented atomically — execvpe is hooked at the
-		// GOT slot and may be called from any Steam thread (fork() helpers are
-		// not guaranteed to be on the main thread), so this could race with
-		// concurrent LaunchApp callbacks.
 		static std::atomic<uint64_t> seq{0};
 		timespec ts{};
 		clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -343,8 +526,15 @@ namespace
 		snprintf(token, sizeof(token), "%u-%ld-%ld-%llu", appId, static_cast<long>(ts.tv_sec),
 		         static_cast<long>(ts.tv_nsec), static_cast<unsigned long long>(seqValue));
 
+		const int64_t nowSec = static_cast<int64_t>(ts.tv_sec);
 		std::lock_guard<std::mutex> lock(g_pendingSessionsMu);
-		g_pendingSessions[token] = {appId, dllPath};
+		for (auto it = g_pendingSessions.begin(); it != g_pendingSessions.end(); ) {
+			if (nowSec - it->second.createdAtSec > kPendingSessionTtlSec)
+				it = g_pendingSessions.erase(it);
+			else
+				++it;
+		}
+		g_pendingSessions[token] = {appId, dllPath, nowSec};
 		return token;
 	}
 
@@ -375,7 +565,7 @@ namespace
 				char before = (off > 0) ? pos[-1] : ' '; /* start-of-string counts as boundary */
 				if ((before == ' ' || before == '\t') &&
 				    (after == '\0' || after == ' ' || after == '\t' || after == '\''))
-					return {rules.appId, rules.helperSo, fe.inject.dllPath, fe.inject.sessionToken, i, off, flen};
+					return {rules.appId, rules.helperSo, fe.inject.dllPath, rules.sessionToken, i, off, flen};
 			}
 		}
 		return {};
@@ -391,7 +581,7 @@ namespace
 			if (rulesIt != g_launchRulesByApp.end()) {
 				auto appIt = rulesIt->second.dllByApp.find(appId);
 				if (appIt != rulesIt->second.dllByApp.end())
-					return {appId, rulesIt->second.helperSo, appIt->second.dllPath, appIt->second.sessionToken, -1, 0, 0};
+					return {appId, rulesIt->second.helperSo, appIt->second.dllPath, rulesIt->second.sessionToken, -1, 0, 0};
 
 				LaunchMatch byFlag = findFlagMatch(rulesIt->second, argv);
 				if (!byFlag.dllPath.empty()) return byFlag;
@@ -414,19 +604,49 @@ namespace
 		LaunchRules rules;
 		rules.appId = currentAppId;
 		rules.helperSo = helperSo;
+
+		// Deterministic single-entry selection done pre-fork. App-rule wins;
+		// else a Flag entry whose flag is present in the user's launch
+		// options (read via CConfigStore::GetConfigString — slot 5 — on the
+		// per-user store at the pattern-resolved CUser offset).
+		const CConfig::ProtonInjectEntry* chosen = nullptr;
 		for (const auto& entry : cfg.dlls) {
 			if (entry.path.empty()) continue;
-			const bool relevant = entry.apps.count(currentAppId) || !entry.flag.empty();
-			if (!std::filesystem::exists(entry.path)) {
-				if (relevant)
-					g_pLog->warn("ProtonInject: DLL not found: %s\n", entry.path.c_str());
-				continue;
-			}
-			if (entry.apps.count(currentAppId))
-				rules.dllByApp[currentAppId] = {entry.path, registerPendingSession(currentAppId, entry.path)};
-			if (!entry.flag.empty())
-				rules.dllByFlag.push_back({entry.flag, {entry.path, registerPendingSession(currentAppId, entry.path)}});
+			if (entry.apps.count(currentAppId) > 0) { chosen = &entry; break; }
 		}
+		std::string launchOpts;
+		if (!chosen) {
+			// Only query Steam for the LaunchOptions string if there's at
+			// least one usable Flag entry to match against — otherwise the
+			// IPC-ish vtable call is pure waste.
+			const bool hasFlagEntry = std::any_of(cfg.dlls.begin(), cfg.dlls.end(),
+				[](const auto& e) { return !e.path.empty() && !e.flag.empty(); });
+			if (hasFlagEntry) {
+				launchOpts = getUserLaunchOptions(currentAppId);
+				for (const auto& entry : cfg.dlls) {
+					if (entry.path.empty() || entry.flag.empty()) continue;
+					if (flagAppearsIn(launchOpts, entry.flag)) { chosen = &entry; break; }
+				}
+			}
+		}
+		if (!chosen) {
+			g_pLog->debug("ProtonInject: no matching entry for appId %u (LaunchOptions=\"%s\")\n",
+				currentAppId, launchOpts.c_str());
+			return rules;
+		}
+		if (!std::filesystem::exists(chosen->path)) {
+			g_pLog->warn("ProtonInject: DLL not found: %s\n", chosen->path.c_str());
+			return rules;
+		}
+
+		if (chosen->apps.count(currentAppId) > 0)
+			rules.dllByApp[currentAppId] = {chosen->path};
+		if (!chosen->flag.empty())
+			rules.dllByFlag.push_back({chosen->flag, {chosen->path}});
+
+		// ONE token per app session, registered pre-fork. Path is the chosen
+		// DLL — server returns it to the helper on resolve.
+		rules.sessionToken = registerPendingSession(currentAppId, chosen->path);
 		return rules;
 	}
 
@@ -464,6 +684,10 @@ namespace
 		const auto match = findDllForLaunch(argv, envp);
 		if (match.dllPath.empty() || match.helperSo.empty() || !match.appId)
 			return g_origExecvpe(file, argv, envp);
+		// match.sessionToken was populated by buildLaunchRules in the parent
+		// (Steam main thread). We're running post-fork in the child here —
+		// reading from the rules table works (fork preserves memory); writing
+		// to g_pendingSessions would not (parent's map wouldn't see it).
 
 		/* If matched by flag, strip it from the argv string so the game
 		 * doesn't see it. Steam passes the whole command as /bin/sh -c "...",
@@ -494,9 +718,11 @@ namespace
 			return g_origExecvpe(file, argv, envp);
 
 		std::string sessionEntry = std::string(SLS_PROTON_INJECT_SESSION_ENV) + "=" + match.sessionToken;
+		g_pLog->debug("ProtonInject: execvpe match appId=%u dll=%s token=%s\n",
+			match.appId, match.dllPath.c_str(), match.sessionToken.c_str());
 
-		// Build new envp: append helper preload and opaque IPC session token.
-		// +2 for LD_PRELOAD + session, +1 for NULL
+		// Build new envp: LD_PRELOAD + session token.
+		// +2 new entries + 1 NULL terminator.
 		char** newEnvp = static_cast<char**>(alloca((count + 3) * sizeof(char*)));
 
 		std::string ldPreloadEntry;
@@ -610,7 +836,61 @@ void ProtonInject::onLaunchApp(uint32_t appId)
 
 	auto appIt = rules.dllByApp.find(appId);
 	if (appIt != rules.dllByApp.end())
-		g_pLog->info("ProtonInject: appId %u -> %s\n", appId, appIt->second.dllPath.c_str());
+		g_pLog->info("ProtonInject: appId %u -> %s (App rule)\n",
+			appId, appIt->second.dllPath.c_str());
 	else if (!rules.dllByFlag.empty())
-		g_pLog->info("ProtonInject: appId %u (flag matching active, %zu rules)\n", appId, rules.dllByFlag.size());
+		g_pLog->info("ProtonInject: appId %u -> %s (Flag=\"%s\" from LaunchOptions)\n",
+			appId, rules.dllByFlag.front().inject.dllPath.c_str(),
+			rules.dllByFlag.front().flag.c_str());
+}
+
+namespace
+{
+	std::mutex g_runningAppsMu;
+	std::unordered_set<uint32_t> g_lastRunningApps;
+
+	// Recently-issued tokens within this window are protected from
+	// GamesPlayed-diff drops — covers a race where Steam queues the
+	// "game stopped" CMsgClientGamesPlayed but the user is already
+	// re-launching the same app and our new token would otherwise be
+	// dropped just before execvpe.
+	inline constexpr int64_t kGamesPlayedDropProtectSec = 5;
+}
+
+void ProtonInject::onGamesPlayedUpdate(const std::unordered_set<uint32_t>& runningAppIds)
+{
+	std::unordered_set<uint32_t> stopped;
+	{
+		std::lock_guard<std::mutex> lock(g_runningAppsMu);
+		for (uint32_t appId : g_lastRunningApps) {
+			if (!runningAppIds.count(appId)) stopped.insert(appId);
+		}
+		g_lastRunningApps = runningAppIds;
+	}
+	if (stopped.empty()) return;
+
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	const int64_t nowSec = static_cast<int64_t>(ts.tv_sec);
+
+	for (uint32_t appId : stopped) {
+		size_t reaped = 0;
+		size_t remaining = 0;
+		{
+			std::lock_guard<std::mutex> lock(g_pendingSessionsMu);
+			for (auto it = g_pendingSessions.begin(); it != g_pendingSessions.end(); ) {
+				if (it->second.appId == appId
+				 && nowSec - it->second.createdAtSec >= kGamesPlayedDropProtectSec) {
+					it = g_pendingSessions.erase(it);
+					++reaped;
+				} else {
+					++it;
+				}
+			}
+			remaining = g_pendingSessions.size();
+		}
+		eraseLaunchRules(appId);
+		g_pLog->debug("ProtonInject: GamesPlayed-stopped appId=%u reaped=%zu (pending=%zu)\n",
+			appId, reaped, remaining);
+	}
 }

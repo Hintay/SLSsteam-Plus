@@ -102,7 +102,7 @@ static const NewConfigEntry kNewConfigEntries[] = {
 	  "# Apps: list of AppIds to inject into (optional if Flag is set).\n"
 	  "# Flag: a Steam launch option that triggers injection for any game.\n"
 	  "#   The flag is stripped from argv before the game sees it.\n"
-	  "# Requires sls_proton_inject.so next to SLSsteam.so.\n"
+	  "# Requires sls_proton_inject.so (next to SLSsteam.so, or under /usr/lib).\n"
 	  "# Example:\n"
 	  "#   [ProtonInject]\n"
 	  "#   [[ProtonInject.Dlls]]\n"
