@@ -24,7 +24,7 @@ public:
 		std::string title;
 	};
 
-	struct ProtonInjectEntry
+	struct LibraryInjectEntry
 	{
 		std::string path;
 		std::string flag;
@@ -110,12 +110,15 @@ public:
 	// These are scanned after the built-in steam-root and user-config dirs.
 	MTVariable<std::vector<std::string>> luaPaths;
 
-	struct ProtonInjectConfig
+	// Holds the unified [LibraryInject] config. `libs` is a flat list of
+	// entries; each entry's Path extension picks the backend at LaunchApp
+	// time: ".dll" -> Proton helper flow, ".so" -> native Linux LD_PRELOAD.
+	struct LibraryInjectConfig
 	{
 		std::string dir;
-		std::vector<ProtonInjectEntry> dlls;
+		std::vector<LibraryInjectEntry> libs;
 	};
-	MTVariable<ProtonInjectConfig> protonInject;
+	MTVariable<LibraryInjectConfig> libraryInject;
 
 	//Using incomplete class to avoid runtime linking errors
 	CFileWatcher* watcher;

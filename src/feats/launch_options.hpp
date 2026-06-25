@@ -4,8 +4,8 @@
 #include <string>
 
 // Shared helper for reading a user's Steam "Launch Options" string and
-// substring-matching a launch-flag inside it. Used by ProtonInject (to pick
-// the DLL to inject before fork) and FakeAppIds (to flag-trigger runtime
+// substring-matching a launch-flag inside it. Used by LibraryInject (to pick
+// the .dll/.so to inject before fork) and FakeAppIds (to flag-trigger runtime
 // real→fake AppId mapping at LaunchApp time).
 namespace LaunchOptions
 {
@@ -23,6 +23,6 @@ namespace LaunchOptions
 
 	// Whitespace/quote-bounded substring search. Returns true when `needle`
 	// appears as a token inside `haystack` (matches the boundary logic used
-	// by the execvpe argv search in ProtonInject).
+	// by the execvpe argv search in LibraryInject's Proton backend).
 	bool flagAppearsIn(const std::string& haystack, const std::string& needle);
 }

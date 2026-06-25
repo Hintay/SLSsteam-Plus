@@ -1,4 +1,4 @@
-#include "protoninject.hpp"
+#include "library_inject.hpp"
 #include "protoninject_protocol.h"
 
 #include "../config.hpp"
@@ -440,7 +440,7 @@ namespace
 		return {};
 	}
 
-	LaunchRules buildLaunchRules(const CConfig::ProtonInjectConfig& cfg, uint32_t currentAppId, const std::string& helperSo)
+	LaunchRules buildLaunchRules(const std::vector<CConfig::LibraryInjectEntry>& entries, uint32_t currentAppId, const std::string& helperSo)
 	{
 		LaunchRules rules;
 		rules.appId = currentAppId;
@@ -450,8 +450,8 @@ namespace
 		// else a Flag entry whose flag is present in the user's launch
 		// options (read via CConfigStore::GetConfigString — slot 5 — on the
 		// per-user store at the pattern-resolved CUser offset).
-		const CConfig::ProtonInjectEntry* chosen = nullptr;
-		for (const auto& entry : cfg.dlls) {
+		const CConfig::LibraryInjectEntry* chosen = nullptr;
+		for (const auto& entry : entries) {
 			if (entry.path.empty()) continue;
 			if (entry.apps.count(currentAppId) > 0) { chosen = &entry; break; }
 		}
@@ -460,11 +460,11 @@ namespace
 			// Only query Steam for the LaunchOptions string if there's at
 			// least one usable Flag entry to match against — otherwise the
 			// IPC-ish vtable call is pure waste.
-			const bool hasFlagEntry = std::any_of(cfg.dlls.begin(), cfg.dlls.end(),
+			const bool hasFlagEntry = std::any_of(entries.begin(), entries.end(),
 				[](const auto& e) { return !e.path.empty() && !e.flag.empty(); });
 			if (hasFlagEntry) {
 				launchOpts = LaunchOptions::forApp(currentAppId);
-				for (const auto& entry : cfg.dlls) {
+				for (const auto& entry : entries) {
 					if (entry.path.empty() || entry.flag.empty()) continue;
 					if (LaunchOptions::flagAppearsIn(launchOpts, entry.flag)) { chosen = &entry; break; }
 				}
@@ -631,58 +631,133 @@ namespace
 	}
 }
 
-void ProtonInject::onLaunchApp(uint32_t appId)
+namespace
 {
-	// Drop any tokens left behind by a previous launch of this app
-	// (game crashed before its Wine helper connected, user cancelled, etc.)
-	// so g_pendingSessions stays bounded across re-launches.
-	dropPendingSessionsForApp(appId);
-
-	const auto cfg = g_config.protonInject.get();
-	if (cfg.dlls.empty()) {
-		clearLaunchRules();
-		return;
+	bool endsWithIgnoreCase(const std::string& s, const char* suffix)
+	{
+		const size_t n = strlen(suffix);
+		if (s.size() < n) return false;
+		for (size_t i = 0; i < n; i++) {
+			char a = s[s.size() - n + i];
+			char b = suffix[i];
+			if (a >= 'A' && a <= 'Z') a = static_cast<char>(a + ('a' - 'A'));
+			if (b >= 'A' && b <= 'Z') b = static_cast<char>(b + ('a' - 'A'));
+			if (a != b) return false;
+		}
+		return true;
 	}
 
-	const std::string helperSo = findHelperSo("sls_proton_inject.so", cfg.dir);
-	if (helperSo.empty()) {
-		clearLaunchRules();
-		g_pLog->warn("ProtonInject: sls_proton_inject.so not found\n");
-		return;
+	// Native shared library match: ".so", or ".so.N", or ".so.N.M[.K...]"
+	// (SONAME-style versioned libraries — e.g. libfoo.so.6, libssl.so.3.0.2).
+	// Accepts any number of dot-separated numeric components after .so.
+	bool looksLikeNativeLib(const std::string& p)
+	{
+		const size_t pos = p.rfind(".so");
+		if (pos == std::string::npos) return false;
+		size_t i = pos + 3;
+		if (i == p.size()) return true; // bare .so
+		while (i < p.size()) {
+			if (p[i] != '.') return false;
+			++i;
+			const size_t digitsStart = i;
+			while (i < p.size() && p[i] >= '0' && p[i] <= '9') ++i;
+			if (i == digitsStart) return false; // ".so." with no digits
+		}
+		return true;
 	}
 
-	if (!ensureControlServer()) {
-		clearLaunchRules();
-		return;
-	}
+	// Proton (.dll) backend entry: install execvpe hook + helper rules for
+	// this AppId given the pre-filtered .dll-only entry list. Internals
+	// (helper IPC server, token map, GamesPlayed reaping) stay below
+	// labelled "ProtonInject:" since they only ever fire for the Wine path.
+	void protonBackendOnLaunchApp(uint32_t appId, const std::vector<CConfig::LibraryInjectEntry>& dllEntries, const std::string& cfgDir)
+	{
+		// Drop any tokens left behind by a previous launch of this app
+		// (game crashed before its Wine helper connected, user cancelled,
+		// etc.) so g_pendingSessions stays bounded across re-launches.
+		dropPendingSessionsForApp(appId);
 
-	LaunchRules rules = buildLaunchRules(cfg, appId, helperSo);
-	if (rules.dllByApp.empty() && rules.dllByFlag.empty()) {
-		eraseLaunchRules(appId);
-		return;
-	}
-
-	if (!g_hooked) {
-		g_hooked = installHooks();
-		if (!g_hooked) {
+		if (dllEntries.empty()) {
 			eraseLaunchRules(appId);
 			return;
 		}
+
+		const std::string helperSo = findHelperSo("sls_proton_inject.so", cfgDir);
+		if (helperSo.empty()) {
+			eraseLaunchRules(appId);
+			g_pLog->warn("ProtonInject: sls_proton_inject.so not found\n");
+			return;
+		}
+
+		if (!ensureControlServer()) {
+			eraseLaunchRules(appId);
+			return;
+		}
+
+		LaunchRules rules = buildLaunchRules(dllEntries, appId, helperSo);
+		if (rules.dllByApp.empty() && rules.dllByFlag.empty()) {
+			eraseLaunchRules(appId);
+			return;
+		}
+
+		if (!g_hooked) {
+			g_hooked = installHooks();
+			if (!g_hooked) {
+				eraseLaunchRules(appId);
+				return;
+			}
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(g_launchRulesMu);
+			g_launchRulesByApp[appId] = rules;
+		}
+
+		auto appIt = rules.dllByApp.find(appId);
+		if (appIt != rules.dllByApp.end())
+			g_pLog->info("ProtonInject: appId %u -> %s (App rule)\n",
+				appId, appIt->second.dllPath.c_str());
+		else if (!rules.dllByFlag.empty())
+			g_pLog->info("ProtonInject: appId %u -> %s (Flag=\"%s\" from LaunchOptions)\n",
+				appId, rules.dllByFlag.front().inject.dllPath.c_str(),
+				rules.dllByFlag.front().flag.c_str());
 	}
 
+	// Native Linux (.so) backend entry: stub. Once compat-tool detection
+	// lands (task: IClientCompat::GetCompatToolName), this will set up an
+	// LD_PRELOAD-injection path for native game exec. Currently it only
+	// logs that a .so entry was configured.
+	void linuxBackendOnLaunchApp(uint32_t appId, const std::vector<CConfig::LibraryInjectEntry>& soEntries)
 	{
-		std::lock_guard<std::mutex> lock(g_launchRulesMu);
-		g_launchRulesByApp[appId] = rules;
+		if (soEntries.empty()) return;
+		g_pLog->info("LibraryInject: appId %u has %zu native .so entry/entries (native LD_PRELOAD backend not yet implemented)\n",
+			appId, soEntries.size());
+	}
+}
+
+void LibraryInject::onLaunchApp(uint32_t appId)
+{
+	const auto cfg = g_config.libraryInject.get();
+	if (cfg.libs.empty()) {
+		// No config at all: still clear lingering proton rules so a
+		// FileWatcher-driven config edit that removed every entry
+		// stops injecting on the next launch.
+		clearLaunchRules();
+		dropPendingSessionsForApp(appId);
+		return;
 	}
 
-	auto appIt = rules.dllByApp.find(appId);
-	if (appIt != rules.dllByApp.end())
-		g_pLog->info("ProtonInject: appId %u -> %s (App rule)\n",
-			appId, appIt->second.dllPath.c_str());
-	else if (!rules.dllByFlag.empty())
-		g_pLog->info("ProtonInject: appId %u -> %s (Flag=\"%s\" from LaunchOptions)\n",
-			appId, rules.dllByFlag.front().inject.dllPath.c_str(),
-			rules.dllByFlag.front().flag.c_str());
+	// Partition entries by Path extension first.
+	std::vector<CConfig::LibraryInjectEntry> dllEntries;
+	std::vector<CConfig::LibraryInjectEntry> soEntries;
+	for (const auto& e : cfg.libs) {
+		if (endsWithIgnoreCase(e.path, ".dll"))  dllEntries.push_back(e);
+		else if (looksLikeNativeLib(e.path))     soEntries.push_back(e);
+		else g_pLog->warn("LibraryInject: ignoring entry with unknown extension: %s\n", e.path.c_str());
+	}
+
+	protonBackendOnLaunchApp(appId, dllEntries, cfg.dir);
+	linuxBackendOnLaunchApp(appId, soEntries);
 }
 
 namespace
@@ -698,7 +773,7 @@ namespace
 	inline constexpr int64_t kGamesPlayedDropProtectSec = 5;
 }
 
-void ProtonInject::onGamesPlayedUpdate(const std::unordered_set<uint32_t>& runningAppIds)
+void LibraryInject::onGamesPlayedUpdate(const std::unordered_set<uint32_t>& runningAppIds)
 {
 	std::unordered_set<uint32_t> stopped;
 	{

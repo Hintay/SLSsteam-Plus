@@ -13,7 +13,7 @@
 
 #include "fakeappid.hpp"
 #include "package.hpp"
-#include "protoninject.hpp"
+#include "library_inject.hpp"
 
 #include <unordered_set>
 
@@ -229,7 +229,7 @@ void Apps::sendGamesPlayed(CMsgClientGamesPlayed* msg)
 	auto titles = g_config.gameTitles.get();
 	bool owned = false;
 
-	// Build a snapshot of currently-running app ids for ProtonInject's
+	// Build a snapshot of currently-running app ids for LibraryInject's
 	// GamesPlayed-diff cleanup path (covers Steam-overlay "Exit Game").
 	std::unordered_set<uint32_t> runningAppIds;
 
@@ -271,7 +271,7 @@ void Apps::sendGamesPlayed(CMsgClientGamesPlayed* msg)
 		g_pLog->debug("Playing game %llu with flags %u & pid %u\n", game.game_id(), game.game_flags(), game.process_id());
 	}
 
-	ProtonInject::onGamesPlayedUpdate(runningAppIds);
+	LibraryInject::onGamesPlayedUpdate(runningAppIds);
 
 	if (owned || msg->games_played_size() > 0)
 	{

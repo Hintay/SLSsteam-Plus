@@ -25,7 +25,7 @@ namespace Package {
 
     // Read accessor for the cached CUser*. Captured from CUser hooks and, if
     // needed, lazily resolved from CSteamEngine::getUser(0). Used by
-    // ProtonInject to reach the per-user CConfigStore at a pattern-resolved
+    // LibraryInject to reach the per-user CConfigStore at a pattern-resolved
     // offset inside CUser.
     void* getCUser();
 

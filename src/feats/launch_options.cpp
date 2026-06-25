@@ -115,7 +115,7 @@ namespace LaunchOptions
 	std::string forApp(uint32_t appId)
 	{
 		// Single-entry cache keyed on appId so back-to-back calls within the
-		// same LaunchApp hook (FakeAppIds::onLaunchApp → ProtonInject::onLaunchApp)
+		// same LaunchApp hook (FakeAppIds::onLaunchApp → LibraryInject::onLaunchApp)
 		// hit cached value instead of round-tripping through the CConfigStore
 		// vtable a second time. Same-thread invariants apply.
 		static uint32_t s_cachedAppId = 0;

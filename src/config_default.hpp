@@ -105,29 +105,33 @@ LogLevel = 2
 #   76561198000000000 = [12345, 67890]
 #[DenuvoGames]
 
-# Inject a pre-compiled Windows DLL into Proton game processes.
-# Uses an LD_PRELOAD'd 64-bit helper inside each Wine PE process that
-# detours ntdll!LdrLoadDll and calls it for the configured DLL the first
-# time the host loads steam_api64.dll / steamclient.dll (i.e. the game
-# process that just called SteamAPI_Init).
-# Path: absolute Linux path to the DLL (Wine accesses it directly).
+# Inject a pre-compiled library into game processes.
+#   *.dll → Proton (Wine) games: a 64-bit helper LD_PRELOAD'd inside each
+#           Wine PE process detours ntdll!LdrLoadDll and loads the DLL the
+#           first time the host loads steam_api64.dll / steamclient.dll
+#           (i.e. the game process that just called SteamAPI_Init).
+#   *.so  → Native Linux games (NOT YET IMPLEMENTED): will be added to
+#           LD_PRELOAD when SLSsteam launches the game.
+# Path: absolute Linux path to a .dll or .so.
 # Apps: list of AppIds to inject into (optional if Flag is set).
 # Flag: a Steam launch option (e.g. "-onlinefix") that triggers injection.
-#   Any game launched with this flag will inject the DLL; the flag is
+#   Any game launched with this flag will inject the library; the flag is
 #   stripped from argv before the game sees it. Apps and Flag can coexist.
-# Requires sls_proton_inject.so. Searched next to SLSsteam.so, then under
-# /usr/lib and /usr/lib64; set Dir to override the search path.
+# Same AppId may appear in both a .dll and a .so entry; per-launch the
+# matching one fires based on the selected compat tool (Proton vs native).
+# .dll entries require sls_proton_inject.so. Searched next to SLSsteam.so,
+# then under /usr/lib and /usr/lib64; set Dir to override the search path.
 # Examples:
-#   [ProtonInject]
+#   [LibraryInject]
 #   #Dir = "/custom/path"
 #
 #   # Flag: inject into any game launched with -onlinefix in its launch options
-#   [[ProtonInject.Dlls]]
+#   [[LibraryInject.Libs]]
 #   Path = "/home/deck/.config/SLSsteam/OnlineFix.dll"
 #   Flag = "-onlinefix"
 #
 #   # Apps: inject into specific AppIds only
-#   [[ProtonInject.Dlls]]
+#   [[LibraryInject.Libs]]
 #   Path = "/path/to/other.dll"
 #   Apps = [12345, 67890]
 

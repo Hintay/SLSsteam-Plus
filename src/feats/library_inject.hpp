@@ -3,7 +3,15 @@
 #include <cstdint>
 #include <unordered_set>
 
-namespace ProtonInject
+// Library-injection frontend. Reads CConfig::libraryInject, classifies each
+// entry by Path extension at LaunchApp time, and dispatches to the matching
+// backend:
+//   .dll -> Proton helper flow (execvpe LD_PRELOAD of sls_proton_inject.so;
+//           in-Wine LdrLoadDll detour)
+//   .so  -> native Linux LD_PRELOAD (stub)
+// When both extensions are configured for one AppId, the per-launch compat-tool
+// query (IClientCompat::GetCompatToolName) picks the matching half.
+namespace LibraryInject
 {
 	// Called from IClientAppManager::LaunchApp hook. Reads the user's "Launch
 	// Options" string via the per-user CConfigStore at a pattern-resolved CUser

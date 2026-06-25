@@ -97,16 +97,16 @@ static const NewConfigEntry kNewConfigEntries[] = {
 	  "DisableCloud = true\n" },
 
 	// --- Advanced ---
-	{ "ProtonInject", "Advanced",
-	  "# Inject a pre-compiled Windows DLL into Proton game processes.\n"
-	  "# Path: absolute Linux path to the DLL.\n"
+	{ "LibraryInject", "Advanced",
+	  "# Inject a pre-compiled library into game processes.\n"
+	  "# Path: absolute Linux path to a .dll (Proton games) or .so (native).\n"
 	  "# Apps: list of AppIds to inject into (optional if Flag is set).\n"
-	  "# Flag: a Steam launch option that triggers injection for any game.\n"
+	  "# Flag: a Steam launch option that triggers injection.\n"
 	  "#   The flag is stripped from argv before the game sees it.\n"
-	  "# Requires sls_proton_inject.so (next to SLSsteam.so, or under /usr/lib).\n"
+	  "# .dll entries require sls_proton_inject.so (next to SLSsteam.so, or under /usr/lib).\n"
 	  "# Example:\n"
-	  "#   [ProtonInject]\n"
-	  "#   [[ProtonInject.Dlls]]\n"
+	  "#   [LibraryInject]\n"
+	  "#   [[LibraryInject.Libs]]\n"
 	  "#   Path = \"/home/deck/.config/SLSsteam/OnlineFix.dll\"\n"
 	  "#   Flag = \"-onlinefix\"\n" },
 
@@ -1198,16 +1198,16 @@ bool CConfig::loadSettings()
 		}
 	}
 
-	// [ProtonInject] — Dir (optional string) + [[ProtonInject.Dlls]] array of tables.
+	// [LibraryInject] — Dir (optional string) + [[LibraryInject.Libs]] array of tables.
 	{
-		ProtonInjectConfig cfg;
-		if (auto* pi = node["ProtonInject"].as_table()) {
+		LibraryInjectConfig cfg;
+		if (auto* pi = node["LibraryInject"].as_table()) {
 			cfg.dir = (*pi)["Dir"].value_or(std::string(""));
-			if (auto* arr = (*pi)["Dlls"].as_array()) {
+			if (auto* arr = (*pi)["Libs"].as_array()) {
 				for (const auto& item : *arr) {
 					auto* tbl = item.as_table();
 					if (!tbl) continue;
-					ProtonInjectEntry entry;
+					LibraryInjectEntry entry;
 					entry.path = (*tbl)["Path"].value_or(std::string(""));
 					entry.flag = (*tbl)["Flag"].value_or(std::string(""));
 					if (auto* apps = (*tbl)["Apps"].as_array()) {
@@ -1223,17 +1223,17 @@ bool CConfig::loadSettings()
 					}
 					if (!entry.path.empty() && (!entry.apps.empty() || !entry.flag.empty())) {
 						if (!entry.flag.empty())
-							g_pLog->info("ProtonInject: %s -> flag \"%s\" + %zu app(s)\n",
+							g_pLog->info("LibraryInject: %s -> flag \"%s\" + %zu app(s)\n",
 								entry.path.c_str(), entry.flag.c_str(), entry.apps.size());
 						else
-							g_pLog->info("ProtonInject: %s -> %zu app(s)\n",
+							g_pLog->info("LibraryInject: %s -> %zu app(s)\n",
 								entry.path.c_str(), entry.apps.size());
-						cfg.dlls.push_back(std::move(entry));
+						cfg.libs.push_back(std::move(entry));
 					}
 				}
 			}
 		}
-		protonInject = std::move(cfg);
+		libraryInject = std::move(cfg);
 	}
 
 	if (__parseError)

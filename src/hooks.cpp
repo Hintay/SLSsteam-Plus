@@ -30,7 +30,7 @@
 #include "feats/misc.hpp"
 #include "feats/fakeappid.hpp"
 #include "feats/package.hpp"
-#include "feats/protoninject.hpp"
+#include "feats/library_inject.hpp"
 #include "feats/steamui.hpp"
 #include "feats/requestcode.hpp"
 #include "feats/ticket.hpp"
@@ -729,7 +729,7 @@ static void* hkClientAppManager_LaunchApp(void* pClientAppManager, uint32_t* pAp
 		FakeAppIds::launchApp(*pAppId);
 		FakeAppIds::onLaunchApp(*pAppId);
 		Ticket::launchApp(*pAppId);
-		ProtonInject::onLaunchApp(*pAppId);
+		LibraryInject::onLaunchApp(*pAppId);
 	}
 
 	//Do not do anything in post! Otherwise App launching will break
