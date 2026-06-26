@@ -132,6 +132,15 @@ bin/netpacket_smoke: tools/netpacket_smoke/smoke.cpp src/sdk/RawNetPacket.hpp sr
 
 netpacket_smoke: bin/netpacket_smoke
 
+bin/cloudsaves_smoke: tools/cloudsaves_smoke/smoke.cpp src/feats/cloudsaves/sha1.cpp src/feats/cloudsaves/manifest.cpp src/feats/cloudsaves/save_store.cpp src/feats/cloudsaves/peer_check.cpp src/feats/cloudsaves/rpc_engine.cpp obj/proto/slssteam_messages.pb.cc $(PROTOBUF_LITE_A)
+	@mkdir -p bin
+	g++ -std=c++20 -m32 -Og -g -D_GLIBCXX_USE_CXX11_ABI=0 -o bin/cloudsaves_smoke \
+	  tools/cloudsaves_smoke/smoke.cpp src/feats/cloudsaves/sha1.cpp src/feats/cloudsaves/manifest.cpp src/feats/cloudsaves/save_store.cpp src/feats/cloudsaves/peer_check.cpp src/feats/cloudsaves/rpc_engine.cpp obj/proto/slssteam_messages.pb.cc \
+	  -Iobj/proto -Isrc -isystem $(PROTOBUF_INCLUDE) -Llib -lprotobuf-lite
+
+cloudsaves_smoke: bin/cloudsaves_smoke
+	./bin/cloudsaves_smoke
+
 bin/pattern_smoke: tools/pattern_smoke/smoke.cpp src/memhlp_pure.cpp src/memhlp.hpp
 	@mkdir -p bin
 	g++ -std=c++20 -m32 -Og -g -o bin/pattern_smoke tools/pattern_smoke/smoke.cpp src/memhlp_pure.cpp -Iinclude
@@ -353,5 +362,5 @@ build: audit-libs
 rebuild: clean build
 all: clean build zips
 
-.PHONY: all build clean rebuild zips lua_smoke pkg_smoke netpacket_smoke pattern_smoke deps
+.PHONY: all build clean rebuild zips lua_smoke pkg_smoke netpacket_smoke cloudsaves_smoke pattern_smoke deps
 .NOTPARALLEL: clean rebuild zips
