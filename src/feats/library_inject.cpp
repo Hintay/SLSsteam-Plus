@@ -214,9 +214,10 @@ namespace
 
 	struct LaunchMatch {
 		uint32_t appId = 0;
-		std::string helperSo;
-		std::string dllPath;
-		std::string sessionToken; // copied from rules (set by parent at buildLaunchRules)
+		std::string helperSo;     // Proton-only; empty for native
+		std::string libPath;      // Proton: user's DLL (passed to helper via token); native: .so to LD_PRELOAD
+		std::string sessionToken; // Proton-only; empty for native
+		bool isNative = false;
 		int argIndex = -1;
 		size_t flagPos = 0;
 		size_t flagLen = 0;
@@ -409,7 +410,26 @@ namespace
 				char before = (off > 0) ? pos[-1] : ' '; /* start-of-string counts as boundary */
 				if ((before == ' ' || before == '\t') &&
 				    (after == '\0' || after == ' ' || after == '\t' || after == '\''))
-					return {rules.appId, rules.helperSo, fe.inject.dllPath, rules.sessionToken, i, off, flen};
+					return {rules.appId, rules.helperSo, fe.inject.dllPath, rules.sessionToken, false, i, off, flen};
+			}
+		}
+		return {};
+	}
+
+	LaunchMatch findNativeFlagMatch(const LaunchRules& rules, char* const argv[])
+	{
+		if (rules.soByFlag.empty() || !argv) return {};
+		for (int i = 0; argv[i]; i++) {
+			for (const auto& [flag, libPath] : rules.soByFlag) {
+				const char* pos = strstr(argv[i], flag.c_str());
+				if (!pos) continue;
+				size_t off = pos - argv[i];
+				size_t flen = flag.size();
+				char after = pos[flen];
+				char before = (off > 0) ? pos[-1] : ' ';
+				if ((before == ' ' || before == '\t') &&
+				    (after == '\0' || after == ' ' || after == '\t' || after == '\''))
+					return {rules.appId, /*helperSo*/{}, libPath, /*token*/{}, /*isNative*/true, i, off, flen};
 			}
 		}
 		return {};
@@ -423,21 +443,33 @@ namespace
 		if (appId) {
 			auto rulesIt = g_launchRulesByApp.find(appId);
 			if (rulesIt != g_launchRulesByApp.end()) {
-				auto appIt = rulesIt->second.dllByApp.find(appId);
-				if (appIt != rulesIt->second.dllByApp.end())
-					return {appId, rulesIt->second.helperSo, appIt->second.dllPath, rulesIt->second.sessionToken, -1, 0, 0};
+				const auto& rules = rulesIt->second;
 
-				LaunchMatch byFlag = findFlagMatch(rulesIt->second, argv);
-				if (!byFlag.dllPath.empty()) return byFlag;
+				auto dllIt = rules.dllByApp.find(appId);
+				if (dllIt != rules.dllByApp.end())
+					return {appId, rules.helperSo, dllIt->second.dllPath, rules.sessionToken,
+					        /*isNative*/false, -1, 0, 0};
+
+				auto soIt = rules.soByApp.find(appId);
+				if (soIt != rules.soByApp.end())
+					return {appId, /*helperSo*/{}, soIt->second, /*token*/{},
+					        /*isNative*/true, -1, 0, 0};
+
+				LaunchMatch dllFlag = findFlagMatch(rules, argv);
+				if (!dllFlag.libPath.empty()) return dllFlag;
+
+				LaunchMatch soFlag = findNativeFlagMatch(rules, argv);
+				if (!soFlag.libPath.empty()) return soFlag;
 			}
-
 			return {};
 		}
 
-		// If Steam's envp did not expose an AppId, fall back to launch-option flags.
+		// AppId not in envp — fall back to launch-option flags across all known rule sets.
 		for (const auto& [_, rules] : g_launchRulesByApp) {
-			LaunchMatch byFlag = findFlagMatch(rules, argv);
-			if (!byFlag.dllPath.empty()) return byFlag;
+			LaunchMatch dllFlag = findFlagMatch(rules, argv);
+			if (!dllFlag.libPath.empty()) return dllFlag;
+			LaunchMatch soFlag = findNativeFlagMatch(rules, argv);
+			if (!soFlag.libPath.empty()) return soFlag;
 		}
 
 		return {};
@@ -545,7 +577,7 @@ namespace
 		}
 
 		const auto match = findDllForLaunch(argv, envp);
-		if (match.dllPath.empty() || match.helperSo.empty() || !match.appId)
+		if (match.libPath.empty() || match.helperSo.empty() || !match.appId)
 			return g_origExecvpe(file, argv, envp);
 		// match.sessionToken was populated by buildLaunchRules in the parent
 		// (Steam main thread). We're running post-fork in the child here —
@@ -582,7 +614,7 @@ namespace
 
 		std::string sessionEntry = std::string(SLS_PROTON_INJECT_SESSION_ENV) + "=" + match.sessionToken;
 		g_pLog->debug("ProtonInject: execvpe match appId=%u dll=%s token=%s\n",
-			match.appId, match.dllPath.c_str(), match.sessionToken.c_str());
+			match.appId, match.libPath.c_str(), match.sessionToken.c_str());
 
 		// Build new envp: LD_PRELOAD + session token.
 		// +2 new entries + 1 NULL terminator.
