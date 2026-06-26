@@ -438,7 +438,16 @@ namespace
 	LaunchMatch findDllForLaunch(char* const argv[], char* const envp[])
 	{
 		const uint32_t appId = getLaunchAppId(envp);
-		std::lock_guard<std::mutex> lock(g_launchRulesMu);
+
+		// This runs post-fork in the single-threaded child. fork() copies the
+		// mutex in whatever state it had: if a parent thread held g_launchRulesMu
+		// at fork time, the lock is frozen held by a thread that does not exist
+		// here, so a blocking acquire would deadlock the child forever (game
+		// never launches). try_lock instead: on the rare fork-during-write race
+		// we fail to acquire and skip injection for this exec rather than hang.
+		std::unique_lock<std::mutex> lock(g_launchRulesMu, std::try_to_lock);
+		if (!lock.owns_lock())
+			return {};
 
 		if (appId) {
 			auto rulesIt = g_launchRulesByApp.find(appId);
@@ -821,7 +830,8 @@ void LibraryInject::onLaunchApp(uint32_t appId)
 	// Skip the launch entirely until IClientCompat::RunIPCFrame has captured
 	// g_pClientCompat. The race window is the first frames after Steam start.
 	if (!g_pClientCompat) {
-		g_pLog->debug("LibraryInject: appId %u skipped (compat-tool unavailable)\n", appId);
+		g_pLog->warn("LibraryInject: appId %u not injected — IClientCompat not captured yet "
+		             "(launched too early after Steam start); relaunch the game.\n", appId);
 		clearLaunchRules();
 		dropPendingSessionsForApp(appId);
 		return;
