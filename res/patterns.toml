@@ -95,6 +95,11 @@ follow = "None"
 # Entry prologue + unique stack-frame size: sub esp, 0x780
 pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 80 07 00 00"
 
+[Patterns.steamclient."IClientCompat::RunIPCFrame"]
+follow = "None"
+# Entry prologue + sub esp,0x170 + early argument-save sequence.
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 70 01 00 00 8B 45 08 8B 4D 0C 8B 7D 14 89 85 38 FF FF FF"
+
 [Patterns.steamclient."IClientAppManager::BCanRemotePlayTogether"]
 follow = "PrologueUpwards"
 prologue = "E8 53 56 57"

@@ -20,6 +20,7 @@
 #include "sdk/EResult.hpp"
 #include "sdk/IClientAppManager.hpp"
 #include "sdk/IClientApps.hpp"
+#include "sdk/IClientCompat.hpp"
 #include "sdk/IClientUtils.hpp"
 
 #include "feats/achievements.hpp"
@@ -905,6 +906,14 @@ static bool hkClientApps_BGetDLCDataByIndex(void* pClientApps, uint32_t appId, i
 }
 
 __attribute__((hot))
+static void hkClientCompat_RunIPCFrame(void* pClientCompat, void* a1, void* a2, void* a3)
+{
+	// Capture the IClientCompat* for outbound queries (see IClientCompat.cpp).
+	g_pClientCompat = reinterpret_cast<IClientCompat*>(pClientCompat);
+	Hooks::IClientCompat_RunIPCFrame.tramp.fn(pClientCompat, a1, a2, a3);
+}
+
+__attribute__((hot))
 static void hkClientApps_RunIPCFrame(void* pClientApps, void* a1, void* a2, void* a3)
 {
 	static bool hooked = false;
@@ -1621,6 +1630,7 @@ namespace Hooks
 {
 	DetourHook<IClientAppManager_RunIPCFrame_t> IClientAppManager_RunIPCFrame;
 	DetourHook<IClientApps_RunIPCFrame_t> IClientApps_RunIPCFrame;
+	DetourHook<IClientCompat_RunIPCFrame_t> IClientCompat_RunIPCFrame;
 	DetourHook<IClientRemoteStorage_RunIPCFrame_t> IClientRemoteStorage_RunIPCFrame;
 	DetourHook<IClientUGC_RunIPCFrame_t> IClientUGC_RunIPCFrame;
 	DetourHook<IClientUtils_RunIPCFrame_t> IClientUtils_RunIPCFrame;
@@ -1746,6 +1756,7 @@ bool Hooks::setup()
 
 		&& IClientApps_RunIPCFrame.setup(Patterns::IClientApps::RunIPCFrame, hkClientApps_RunIPCFrame)
 		&& IClientAppManager_RunIPCFrame.setup(Patterns::IClientAppManager::RunIPCFrame, hkClientAppManager_RunIPCFrame)
+		&& IClientCompat_RunIPCFrame.setup(Patterns::IClientCompat::RunIPCFrame, hkClientCompat_RunIPCFrame)
 		&& IClientRemoteStorage_RunIPCFrame.setup(Patterns::IClientRemoteStorage::RunIPCFrame, hkClientRemoteStorage_RunIPCFrame)
 		&& IClientUGC_RunIPCFrame.setup(Patterns::IClientUGC::RunIPCFrame, hkClientUGC_RunIPCFrame)
 		&& IClientUtils_RunIPCFrame.setup(Patterns::IClientUtils::RunIPCFrame, hkClientUtils_RunIPCFrame);
@@ -1832,6 +1843,7 @@ void Hooks::place()
 
 	IClientApps_RunIPCFrame.place();
 	IClientAppManager_RunIPCFrame.place();
+	IClientCompat_RunIPCFrame.place();
 	IClientRemoteStorage_RunIPCFrame.place();
 	IClientUGC_RunIPCFrame.place();
 	IClientUtils_RunIPCFrame.place();
@@ -1888,6 +1900,7 @@ void Hooks::remove()
 
 	IClientApps_RunIPCFrame.remove();
 	IClientAppManager_RunIPCFrame.remove();
+	IClientCompat_RunIPCFrame.remove();
 	IClientRemoteStorage_RunIPCFrame.remove();
 	IClientUGC_RunIPCFrame.remove();
 	IClientUtils_RunIPCFrame.remove();

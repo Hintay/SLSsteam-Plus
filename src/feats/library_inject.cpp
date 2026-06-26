@@ -4,6 +4,7 @@
 #include "../config.hpp"
 #include "../globals.hpp"
 #include "../log.hpp"
+#include "../sdk/IClientCompat.hpp"
 #include "launch_options.hpp"
 
 #include <algorithm>
@@ -755,6 +756,22 @@ void LibraryInject::onLaunchApp(uint32_t appId)
 		else if (looksLikeNativeLib(e.path))     soEntries.push_back(e);
 		else g_pLog->warn("LibraryInject: ignoring entry with unknown extension: %s\n", e.path.c_str());
 	}
+
+	// Skip the launch entirely until IClientCompat::RunIPCFrame has captured
+	// g_pClientCompat. The race window is the first frames after Steam start.
+	if (!g_pClientCompat) {
+		g_pLog->debug("LibraryInject: appId %u skipped (compat-tool unavailable)\n", appId);
+		clearLaunchRules();
+		dropPendingSessionsForApp(appId);
+		return;
+	}
+
+	const char* tool = g_pClientCompat->getCompatToolName(appId);
+	const bool isProton = tool && tool[0] != '\0';
+	g_pLog->debug("LibraryInject: appId %u compat-tool=\"%s\" -> %s\n",
+		appId, tool ? tool : "", isProton ? "Proton" : "Native");
+	if (isProton) soEntries.clear();
+	else          dllEntries.clear();
 
 	protonBackendOnLaunchApp(appId, dllEntries, cfg.dir);
 	linuxBackendOnLaunchApp(appId, soEntries);

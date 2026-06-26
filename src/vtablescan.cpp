@@ -23,9 +23,10 @@ namespace
 	// SLSsteam's IClient* VFThook surface. Keep in sync with the installVFT and
 	// VtableScan::slotOf call sites in src/ — any iface name passed to slotOf
 	// must appear here, or the lookup returns -1 and the hook isn't installed.
-	constexpr std::array<std::string_view, 4> kInterestingIfaces {{
+	constexpr std::array<std::string_view, 5> kInterestingIfaces {{
 		"IClientAppManager",
 		"IClientApps",
+		"IClientCompat",
 		"IClientRemoteStorage",
 		"IClientUtils",
 	}};
