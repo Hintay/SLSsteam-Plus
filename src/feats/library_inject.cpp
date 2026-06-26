@@ -687,6 +687,23 @@ namespace
 		return true;
 	}
 
+	// Lowercase-only substring search. `needle` MUST already be lowercase.
+	bool containsCI(const char* hay, const char* needle)
+	{
+		if (!hay || !*hay || !needle || !*needle) return false;
+		const size_t nlen = strlen(needle);
+		for (const char* p = hay; *p; ++p) {
+			size_t i = 0;
+			for (; i < nlen && p[i]; ++i) {
+				char a = p[i];
+				if (a >= 'A' && a <= 'Z') a = static_cast<char>(a + ('a' - 'A'));
+				if (a != needle[i]) break;
+			}
+			if (i == nlen) return true;
+		}
+		return false;
+	}
+
 	// Native shared library match: ".so", or ".so.N", or ".so.N.M[.K...]"
 	// (SONAME-style versioned libraries — e.g. libfoo.so.6, libssl.so.3.0.2).
 	// Accepts any number of dot-separated numeric components after .so.
@@ -797,12 +814,21 @@ void LibraryInject::onLaunchApp(uint32_t appId)
 		return;
 	}
 
+	// Steam Linux Runtime ("SteamLinuxRuntime_sniper" etc.) and native
+	// emulator wrappers (luxtorpeda, boxtron, roberta) return non-empty
+	// compat-tool names but launch native ELF children, so a non-empty
+	// name alone can't be the test. Match on "proton"/"wine" substrings
+	// instead: every Wine-based compat tool (Valve Proton, GE-Proton,
+	// proton-tkg, Wine-GE, wine-tkg) carries one of those tokens, while
+	// SLR and native wrappers carry neither. Unknown tools default to
+	// native — the safer miss direction (skip .dll injection vs. wipe a
+	// configured .so rule).
 	const char* tool = g_pClientCompat->getCompatToolName(appId);
-	const bool isProton = tool && tool[0] != '\0';
+	const bool isWindowsCompat = containsCI(tool, "proton") || containsCI(tool, "wine");
 	g_pLog->debug("LibraryInject: appId %u compat-tool=\"%s\" -> %s\n",
-		appId, tool ? tool : "", isProton ? "Proton" : "Native");
-	if (isProton) soEntries.clear();
-	else          dllEntries.clear();
+		appId, tool ? tool : "", isWindowsCompat ? "Windows-compat" : "Native");
+	if (isWindowsCompat) soEntries.clear();
+	else                 dllEntries.clear();
 
 	installRules(appId, dllEntries, soEntries, cfg.dir);
 }
