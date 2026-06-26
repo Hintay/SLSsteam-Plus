@@ -110,8 +110,8 @@ LogLevel = 2
 #           Wine PE process detours ntdll!LdrLoadDll and loads the DLL the
 #           first time the host loads steam_api64.dll / steamclient.dll
 #           (i.e. the game process that just called SteamAPI_Init).
-#   *.so  → Native Linux games (NOT YET IMPLEMENTED): will be added to
-#           LD_PRELOAD when SLSsteam launches the game.
+#   *.so  → Native Linux games: appended to LD_PRELOAD when SLSsteam
+#           launches the game. Loaded into the game process by glibc.
 # Path: absolute Linux path to a .dll or .so.
 # Apps: list of AppIds to inject into (optional if Flag is set).
 # Flag: a Steam launch option (e.g. "-onlinefix") that triggers injection.

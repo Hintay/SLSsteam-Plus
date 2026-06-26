@@ -577,12 +577,14 @@ namespace
 		}
 
 		const auto match = findDllForLaunch(argv, envp);
-		if (match.libPath.empty() || match.helperSo.empty() || !match.appId)
+		if (match.libPath.empty() || !match.appId
+		 || (!match.isNative && match.helperSo.empty()))
 			return g_origExecvpe(file, argv, envp);
-		// match.sessionToken was populated by buildLaunchRules in the parent
-		// (Steam main thread). We're running post-fork in the child here —
-		// reading from the rules table works (fork preserves memory); writing
-		// to g_pendingSessions would not (parent's map wouldn't see it).
+		// match.sessionToken (Proton path) was populated by buildProtonRules
+		// in the parent (Steam main thread). We're running post-fork in the
+		// child here — reading from the rules table works (fork preserves
+		// memory); writing to g_pendingSessions would not (parent's map
+		// wouldn't see it).
 
 		/* If matched by flag, strip it from the argv string so the game
 		 * doesn't see it. Steam passes the whole command as /bin/sh -c "...",
@@ -609,30 +611,41 @@ namespace
 		int count = 0;
 		while (envp[count]) count++;
 
-		if (match.sessionToken.empty())
+		// Proton path requires a session token; if it's missing (helper missing
+		// or token registration failed) we cannot inject — fall through.
+		if (!match.isNative && match.sessionToken.empty())
 			return g_origExecvpe(file, argv, envp);
 
-		std::string sessionEntry = std::string(SLS_PROTON_INJECT_SESSION_ENV) + "=" + match.sessionToken;
-		g_pLog->debug("ProtonInject: execvpe match appId=%u dll=%s token=%s\n",
-			match.appId, match.libPath.c_str(), match.sessionToken.c_str());
+		// Proton: LD_PRELOAD the helper, which IPC-pulls the user DLL via
+		// match.sessionToken. Native: LD_PRELOAD the user's .so directly.
+		const std::string& preloadPath = match.isNative ? match.libPath : match.helperSo;
 
-		// Build new envp: LD_PRELOAD + session token.
-		// +2 new entries + 1 NULL terminator.
+		std::string sessionEntry;
+		if (!match.isNative) {
+			sessionEntry = std::string(SLS_PROTON_INJECT_SESSION_ENV) + "=" + match.sessionToken;
+			g_pLog->debug("ProtonInject: execvpe match appId=%u dll=%s token=%s\n",
+				match.appId, match.libPath.c_str(), match.sessionToken.c_str());
+		} else {
+			g_pLog->debug("LibraryInject(native): execvpe match appId=%u so=%s\n",
+				match.appId, match.libPath.c_str());
+		}
+
+		// +2 (LD_PRELOAD + optional session) + 1 NULL terminator.
 		char** newEnvp = static_cast<char**>(alloca((count + 3) * sizeof(char*)));
 
 		std::string ldPreloadEntry;
 		for (int i = 0; i < count; i++) {
 			if (startsWith(envp[i], "LD_PRELOAD=")) {
 				const char* curPreload = envp[i] + 11;
-				if (colonListContains(curPreload, match.helperSo))
+				if (colonListContains(curPreload, preloadPath))
 					ldPreloadEntry = envp[i];
 				else
-					ldPreloadEntry = std::string(envp[i]) + ":" + match.helperSo;
+					ldPreloadEntry = std::string(envp[i]) + ":" + preloadPath;
 				break;
 			}
 		}
 		if (ldPreloadEntry.empty())
-			ldPreloadEntry = "LD_PRELOAD=" + match.helperSo;
+			ldPreloadEntry = "LD_PRELOAD=" + preloadPath;
 
 		int dst = 0;
 		bool replacedPreload = false;
@@ -641,7 +654,7 @@ namespace
 			if (startsWith(envp[i], "LD_PRELOAD=")) {
 				newEnvp[dst++] = const_cast<char*>(ldPreloadEntry.c_str());
 				replacedPreload = true;
-			} else if (startsWith(envp[i], SLS_PROTON_INJECT_SESSION_ENV "=")) {
+			} else if (!match.isNative && startsWith(envp[i], SLS_PROTON_INJECT_SESSION_ENV "=")) {
 				newEnvp[dst++] = const_cast<char*>(sessionEntry.c_str());
 				replacedSession = true;
 			} else {
@@ -650,7 +663,7 @@ namespace
 		}
 		if (!replacedPreload)
 			newEnvp[dst++] = const_cast<char*>(ldPreloadEntry.c_str());
-		if (!replacedSession)
+		if (!match.isNative && !replacedSession)
 			newEnvp[dst++] = const_cast<char*>(sessionEntry.c_str());
 		newEnvp[dst] = nullptr;
 
