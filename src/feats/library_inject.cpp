@@ -131,21 +131,18 @@ namespace
 	// the child would write to the child's own g_pendingSessions, which
 	// the control-socket server (parent) never sees — the helper would
 	// always get DENY.
-	struct InjectEntry {
-		std::string dllPath;
-	};
-	struct FlagEntry {
-		std::string flag;
-		InjectEntry inject;
-	};
+	// One installed record per AppId. The dispatcher pre-filters config entries
+	// to a single platform per launch, so a record is either all-Proton or
+	// all-native: `isNative` tags which, and helperSo/sessionToken carry the
+	// Proton-only plumbing (empty for native records). byApp/byFlag hold the
+	// library path keyed by AppId or by launch-flag respectively.
 	struct LaunchRules {
 		uint32_t appId = 0;
+		bool isNative = false;
 		std::string helperSo;     // Proton-only
 		std::string sessionToken; // Proton-only; one per-session token, pre-fork
-		std::unordered_map<uint32_t, InjectEntry> dllByApp;
-		std::vector<FlagEntry> dllByFlag;
-		std::unordered_map<uint32_t, std::string> soByApp;                 // native: appId -> .so path
-		std::vector<std::pair<std::string, std::string>> soByFlag;         // native: {flag, .so path}
+		std::unordered_map<uint32_t, std::string> byApp;            // appId -> lib path
+		std::vector<std::pair<std::string, std::string>> byFlag;    // {flag, lib path}
 	};
 
 	std::mutex g_launchRulesMu;
@@ -397,39 +394,23 @@ namespace
 		}
 	}
 
+	// Whitespace/quote-bounded substring search of argv for any configured
+	// launch-flag. Platform (helperSo/token/isNative) comes from the record.
 	LaunchMatch findFlagMatch(const LaunchRules& rules, char* const argv[])
 	{
-		if (rules.dllByFlag.empty() || !argv) return {};
+		if (rules.byFlag.empty() || !argv) return {};
 		for (int i = 0; argv[i]; i++) {
-			for (const auto& fe : rules.dllByFlag) {
-				const char* pos = strstr(argv[i], fe.flag.c_str());
-				if (!pos) continue;
-				size_t off = pos - argv[i];
-				size_t flen = fe.flag.size();
-				char after = pos[flen];
-				char before = (off > 0) ? pos[-1] : ' '; /* start-of-string counts as boundary */
-				if ((before == ' ' || before == '\t') &&
-				    (after == '\0' || after == ' ' || after == '\t' || after == '\''))
-					return {rules.appId, rules.helperSo, fe.inject.dllPath, rules.sessionToken, false, i, off, flen};
-			}
-		}
-		return {};
-	}
-
-	LaunchMatch findNativeFlagMatch(const LaunchRules& rules, char* const argv[])
-	{
-		if (rules.soByFlag.empty() || !argv) return {};
-		for (int i = 0; argv[i]; i++) {
-			for (const auto& [flag, libPath] : rules.soByFlag) {
+			for (const auto& [flag, libPath] : rules.byFlag) {
 				const char* pos = strstr(argv[i], flag.c_str());
 				if (!pos) continue;
 				size_t off = pos - argv[i];
 				size_t flen = flag.size();
 				char after = pos[flen];
-				char before = (off > 0) ? pos[-1] : ' ';
+				char before = (off > 0) ? pos[-1] : ' '; /* start-of-string counts as boundary */
 				if ((before == ' ' || before == '\t') &&
 				    (after == '\0' || after == ' ' || after == '\t' || after == '\''))
-					return {rules.appId, /*helperSo*/{}, libPath, /*token*/{}, /*isNative*/true, i, off, flen};
+					return {rules.appId, rules.helperSo, libPath, rules.sessionToken,
+					        rules.isNative, i, off, flen};
 			}
 		}
 		return {};
@@ -454,31 +435,21 @@ namespace
 			if (rulesIt != g_launchRulesByApp.end()) {
 				const auto& rules = rulesIt->second;
 
-				auto dllIt = rules.dllByApp.find(appId);
-				if (dllIt != rules.dllByApp.end())
-					return {appId, rules.helperSo, dllIt->second.dllPath, rules.sessionToken,
-					        /*isNative*/false, -1, 0, 0};
+				auto appIt = rules.byApp.find(appId);
+				if (appIt != rules.byApp.end())
+					return {appId, rules.helperSo, appIt->second, rules.sessionToken,
+					        rules.isNative, -1, 0, 0};
 
-				auto soIt = rules.soByApp.find(appId);
-				if (soIt != rules.soByApp.end())
-					return {appId, /*helperSo*/{}, soIt->second, /*token*/{},
-					        /*isNative*/true, -1, 0, 0};
-
-				LaunchMatch dllFlag = findFlagMatch(rules, argv);
-				if (!dllFlag.libPath.empty()) return dllFlag;
-
-				LaunchMatch soFlag = findNativeFlagMatch(rules, argv);
-				if (!soFlag.libPath.empty()) return soFlag;
+				LaunchMatch byFlag = findFlagMatch(rules, argv);
+				if (!byFlag.libPath.empty()) return byFlag;
 			}
 			return {};
 		}
 
 		// AppId not in envp — fall back to launch-option flags across all known rule sets.
 		for (const auto& [_, rules] : g_launchRulesByApp) {
-			LaunchMatch dllFlag = findFlagMatch(rules, argv);
-			if (!dllFlag.libPath.empty()) return dllFlag;
-			LaunchMatch soFlag = findNativeFlagMatch(rules, argv);
-			if (!soFlag.libPath.empty()) return soFlag;
+			LaunchMatch byFlag = findFlagMatch(rules, argv);
+			if (!byFlag.libPath.empty()) return byFlag;
 		}
 
 		return {};
@@ -507,51 +478,39 @@ namespace
 		return nullptr;
 	}
 
-	void buildProtonRules(const std::vector<CConfig::LibraryInjectEntry>& entries,
-	                     uint32_t currentAppId,
-	                     const std::string& helperSo,
-	                     LaunchRules& rules)
+	// Pick one matching entry for this AppId and record it into `rules`. The
+	// Proton path additionally records the helper .so and registers a session
+	// token; the native path stores only the library path. helperSo is unused
+	// (and expected empty) when isNative.
+	void buildRules(const std::vector<CConfig::LibraryInjectEntry>& entries,
+	               uint32_t currentAppId,
+	               bool isNative,
+	               const std::string& helperSo,
+	               LaunchRules& rules)
 	{
+		const char* tag = isNative ? "LibraryInject(native)" : "ProtonInject";
 		std::string launchOpts;
 		const CConfig::LibraryInjectEntry* chosen = pickEntry(entries, currentAppId, launchOpts);
 		if (!chosen) {
-			g_pLog->debug("ProtonInject: no matching entry for appId %u (LaunchOptions=\"%s\")\n",
-				currentAppId, launchOpts.c_str());
+			g_pLog->debug("%s: no matching entry for appId %u (LaunchOptions=\"%s\")\n",
+				tag, currentAppId, launchOpts.c_str());
 			return;
 		}
 		if (!std::filesystem::exists(chosen->path)) {
-			g_pLog->warn("ProtonInject: DLL not found: %s\n", chosen->path.c_str());
+			g_pLog->warn("%s: library not found: %s\n", tag, chosen->path.c_str());
 			return;
 		}
 
-		rules.helperSo = helperSo;
+		rules.isNative = isNative;
 		if (chosen->apps.count(currentAppId) > 0)
-			rules.dllByApp[currentAppId] = {chosen->path};
+			rules.byApp[currentAppId] = chosen->path;
 		if (!chosen->flag.empty())
-			rules.dllByFlag.push_back({chosen->flag, {chosen->path}});
+			rules.byFlag.emplace_back(chosen->flag, chosen->path);
 
-		rules.sessionToken = registerPendingSession(currentAppId, chosen->path);
-	}
-
-	void buildNativeRules(const std::vector<CConfig::LibraryInjectEntry>& entries,
-	                     uint32_t currentAppId,
-	                     LaunchRules& rules)
-	{
-		std::string launchOpts;
-		const CConfig::LibraryInjectEntry* chosen = pickEntry(entries, currentAppId, launchOpts);
-		if (!chosen) {
-			g_pLog->debug("LibraryInject(native): no matching entry for appId %u (LaunchOptions=\"%s\")\n",
-				currentAppId, launchOpts.c_str());
-			return;
+		if (!isNative) {
+			rules.helperSo = helperSo;
+			rules.sessionToken = registerPendingSession(currentAppId, chosen->path);
 		}
-		if (!std::filesystem::exists(chosen->path)) {
-			g_pLog->warn("LibraryInject(native): .so not found: %s\n", chosen->path.c_str());
-			return;
-		}
-		if (chosen->apps.count(currentAppId) > 0)
-			rules.soByApp[currentAppId] = chosen->path;
-		if (!chosen->flag.empty())
-			rules.soByFlag.emplace_back(chosen->flag, chosen->path);
 	}
 
 	int getPageProtection(uintptr_t address)
@@ -663,9 +622,14 @@ namespace
 			if (startsWith(envp[i], "LD_PRELOAD=")) {
 				newEnvp[dst++] = const_cast<char*>(ldPreloadEntry.c_str());
 				replacedPreload = true;
-			} else if (!match.isNative && startsWith(envp[i], SLS_PROTON_INJECT_SESSION_ENV "=")) {
-				newEnvp[dst++] = const_cast<char*>(sessionEntry.c_str());
-				replacedSession = true;
+			} else if (startsWith(envp[i], SLS_PROTON_INJECT_SESSION_ENV "=")) {
+				// Proton: replace with this launch's token. Native: drop any
+				// stale session var inherited from a prior Proton exec so it
+				// does not leak into the native game's environment.
+				if (!match.isNative) {
+					newEnvp[dst++] = const_cast<char*>(sessionEntry.c_str());
+					replacedSession = true;
+				}
 			} else {
 				newEnvp[dst++] = envp[i];
 			}
@@ -762,16 +726,15 @@ namespace
 			if (helperSo.empty()) {
 				g_pLog->warn("ProtonInject: sls_proton_inject.so not found\n");
 			} else if (ensureControlServer()) {
-				buildProtonRules(dllEntries, appId, helperSo, rules);
+				buildRules(dllEntries, appId, /*isNative*/false, helperSo, rules);
 			}
 		}
 
 		if (!soEntries.empty()) {
-			buildNativeRules(soEntries, appId, rules);
+			buildRules(soEntries, appId, /*isNative*/true, /*helperSo*/{}, rules);
 		}
 
-		if (rules.dllByApp.empty() && rules.dllByFlag.empty()
-		 && rules.soByApp.empty() && rules.soByFlag.empty()) {
+		if (rules.byApp.empty() && rules.byFlag.empty()) {
 			eraseLaunchRules(appId);
 			return;
 		}
@@ -786,23 +749,14 @@ namespace
 			g_launchRulesByApp[appId] = rules;
 		}
 
-		auto dllIt = rules.dllByApp.find(appId);
-		if (dllIt != rules.dllByApp.end())
-			g_pLog->info("ProtonInject: appId %u -> %s (App rule)\n",
-				appId, dllIt->second.dllPath.c_str());
-		else if (!rules.dllByFlag.empty())
-			g_pLog->info("ProtonInject: appId %u -> %s (Flag=\"%s\" from LaunchOptions)\n",
-				appId, rules.dllByFlag.front().inject.dllPath.c_str(),
-				rules.dllByFlag.front().flag.c_str());
-
-		auto soIt = rules.soByApp.find(appId);
-		if (soIt != rules.soByApp.end())
-			g_pLog->info("LibraryInject(native): appId %u -> %s (App rule)\n",
-				appId, soIt->second.c_str());
-		else if (!rules.soByFlag.empty())
-			g_pLog->info("LibraryInject(native): appId %u -> %s (Flag=\"%s\" from LaunchOptions)\n",
-				appId, rules.soByFlag.front().second.c_str(),
-				rules.soByFlag.front().first.c_str());
+		const char* tag = rules.isNative ? "LibraryInject(native)" : "ProtonInject";
+		auto appIt = rules.byApp.find(appId);
+		if (appIt != rules.byApp.end())
+			g_pLog->info("%s: appId %u -> %s (App rule)\n", tag, appId, appIt->second.c_str());
+		else if (!rules.byFlag.empty())
+			g_pLog->info("%s: appId %u -> %s (Flag=\"%s\" from LaunchOptions)\n",
+				tag, appId, rules.byFlag.front().second.c_str(),
+				rules.byFlag.front().first.c_str());
 	}
 }
 
