@@ -13,6 +13,12 @@
 // query (IClientCompat::GetCompatToolName) picks the matching half.
 namespace LibraryInject
 {
+	// True iff at least one [[LibraryInject.Libs]] entry is configured. Used at
+	// Hooks::setup() time to skip installing the IClientCompat::RunIPCFrame
+	// trampoline (whose only purpose is capturing g_pClientCompat for the
+	// Proton-vs-native routing decision) when the feature is unused.
+	bool isEnabled();
+
 	// Called from IClientAppManager::LaunchApp hook. Reads the user's "Launch
 	// Options" string via the per-user CConfigStore at a pattern-resolved CUser
 	// offset (vtable slot 5) pre-fork so we can deterministically pick the

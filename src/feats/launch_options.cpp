@@ -110,19 +110,9 @@ namespace
 
 namespace LaunchOptions
 {
-	// Sole callers are LaunchApp hook handlers (Steam main thread). Static
-	// caches are read/written only on that thread, so no synchronization.
+	// Sole callers are LaunchApp hook handlers (Steam main thread).
 	std::string forApp(uint32_t appId)
 	{
-		// Single-entry cache keyed on appId so back-to-back calls within the
-		// same LaunchApp hook (FakeAppIds::onLaunchApp → LibraryInject::onLaunchApp)
-		// hit cached value instead of round-tripping through the CConfigStore
-		// vtable a second time. Same-thread invariants apply.
-		static uint32_t s_cachedAppId = 0;
-		static std::string s_cachedValue;
-		static bool s_cachedValid = false;
-		if (s_cachedValid && s_cachedAppId == appId) return s_cachedValue;
-
 		static const uintptr_t offset = decodeConfigStoreOffset();
 		if (!offset) return "";
 
@@ -159,10 +149,7 @@ namespace LaunchOptions
 		const char* val = s_fn(configThis, 3, key, "");
 		g_pLog->debug("LaunchOptions: CConfigStore::GetString(%u) -> \"%s\"\n",
 			appId, val ? val : "(null)");
-		s_cachedAppId = appId;
-		s_cachedValue = val ? std::string(val) : "";
-		s_cachedValid = true;
-		return s_cachedValue;
+		return val ? std::string(val) : "";
 	}
 
 	// Word-boundary substring match: true if `needle` appears in `haystack`

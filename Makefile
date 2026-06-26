@@ -320,6 +320,11 @@ PROTON_INJECT_SRCS := \
 
 PROTON_INJECT_HDRS := $(wildcard tools/proton_inject/*.hpp)
 
+# Shared IPC protocol header: tools/proton_inject/ipc.cpp includes it, so any
+# protocol change must trigger a helper rebuild to keep client/server in sync
+# with bin/SLSsteam.so.
+PROTON_INJECT_HDRS += src/feats/protoninject_protocol.h
+
 bin/sls_proton_inject.so: $(PROTON_INJECT_SRCS) $(PROTON_INJECT_HDRS)
 	@mkdir -p bin
 	$(HOST_CXX) -shared -fPIC -O2 -Wall -Wextra -Wpedantic \

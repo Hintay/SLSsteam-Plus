@@ -760,6 +760,12 @@ namespace
 	}
 }
 
+bool LibraryInject::isEnabled()
+{
+	return g_config.libraryInject.read(
+		[](const auto& cfg) { return !cfg.libs.empty(); });
+}
+
 void LibraryInject::onLaunchApp(uint32_t appId)
 {
 	const auto cfg = g_config.libraryInject.get();

@@ -1187,6 +1187,7 @@ static bool hkClientRemoteStorage_IsCloudEnabledForApp(void* pClientRemoteStorag
 
 static bool g_bUpdateAppDownloadPlanReady = false;
 static bool g_bConfigStoreWriteVdfFileReady = false;
+static bool g_bClientCompatReady = false;
 
 static void hkClientRemoteStorage_RunIPCFrame(void* pClientRemoteStorage, void* a1, void* a2, void* a3)
 {
@@ -1756,7 +1757,6 @@ bool Hooks::setup()
 
 		&& IClientApps_RunIPCFrame.setup(Patterns::IClientApps::RunIPCFrame, hkClientApps_RunIPCFrame)
 		&& IClientAppManager_RunIPCFrame.setup(Patterns::IClientAppManager::RunIPCFrame, hkClientAppManager_RunIPCFrame)
-		&& IClientCompat_RunIPCFrame.setup(Patterns::IClientCompat::RunIPCFrame, hkClientCompat_RunIPCFrame)
 		&& IClientRemoteStorage_RunIPCFrame.setup(Patterns::IClientRemoteStorage::RunIPCFrame, hkClientRemoteStorage_RunIPCFrame)
 		&& IClientUGC_RunIPCFrame.setup(Patterns::IClientUGC::RunIPCFrame, hkClientUGC_RunIPCFrame)
 		&& IClientUtils_RunIPCFrame.setup(Patterns::IClientUtils::RunIPCFrame, hkClientUtils_RunIPCFrame);
@@ -1780,6 +1780,16 @@ bool Hooks::setup()
 		"BUpdateAppDownloadPlan hook: ready=%i\n",
 		g_bUpdateAppDownloadPlanReady
 	);
+
+	// IClientCompat::RunIPCFrame's sole purpose is to capture g_pClientCompat
+	// for LibraryInject's Proton-vs-native routing. Skip the hook entirely when
+	// no [[LibraryInject.Libs]] entries are configured — leaves users unaffected
+	// by future steamclient drift in this one pattern.
+	if (LibraryInject::isEnabled())
+	{
+		g_bClientCompatReady = IClientCompat_RunIPCFrame.setup(Patterns::IClientCompat::RunIPCFrame, hkClientCompat_RunIPCFrame);
+		g_pLog->debug("IClientCompat::RunIPCFrame hook: ready=%i\n", g_bClientCompatReady);
+	}
 
 	LuaLoader::setOnDepotsChanged(&Package::notifyLicenseChanged);
 
@@ -1843,7 +1853,10 @@ void Hooks::place()
 
 	IClientApps_RunIPCFrame.place();
 	IClientAppManager_RunIPCFrame.place();
-	IClientCompat_RunIPCFrame.place();
+	if (g_bClientCompatReady)
+	{
+		IClientCompat_RunIPCFrame.place();
+	}
 	IClientRemoteStorage_RunIPCFrame.place();
 	IClientUGC_RunIPCFrame.place();
 	IClientUtils_RunIPCFrame.place();
@@ -1900,7 +1913,10 @@ void Hooks::remove()
 
 	IClientApps_RunIPCFrame.remove();
 	IClientAppManager_RunIPCFrame.remove();
-	IClientCompat_RunIPCFrame.remove();
+	if (g_bClientCompatReady)
+	{
+		IClientCompat_RunIPCFrame.remove();
+	}
 	IClientRemoteStorage_RunIPCFrame.remove();
 	IClientUGC_RunIPCFrame.remove();
 	IClientUtils_RunIPCFrame.remove();
