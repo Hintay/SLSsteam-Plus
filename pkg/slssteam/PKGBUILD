@@ -31,7 +31,7 @@ validpgpkeys=("63AB8F4BF8A62EEEB8D8C7584410F8CF7129B2D6")
 
 build() {
 	cd "$srcdir/SLSsteam-$pkgver"
-	make
+	make bin/SLSsteam.so bin/library-inject.so bin/sls_proton_inject.so
 }
 
 package() {
@@ -39,6 +39,7 @@ package() {
 
 	install -D "$srcdir/SLSsteam-$pkgver/bin/SLSsteam.so" "$pkgdir/usr/lib32/libSLSsteam.so"
 	install -D "$srcdir/SLSsteam-$pkgver/bin/library-inject.so" "$pkgdir/usr/lib32/libSLS-library-inject.so"
+	install -Dm644 "$srcdir/SLSsteam-$pkgver/bin/sls_proton_inject.so" "$pkgdir/usr/lib/sls_proton_inject.so"
 	install -D "$srcdir/SLSsteam-$pkgver/res/SLSsteam.desktop" "$pkgdir/usr/share/applications/SLSsteam.desktop"
 	install -D "$srcdir/SLSsteam-$pkgver/res/SLSsteam-native.desktop" "$pkgdir/usr/share/applications/SLSsteam-native.desktop"
 	install -D "$srcdir/SLSsteam-$pkgver/res/logo.png" "$pkgdir/usr/share/pixmaps/SLSsteam.png"
