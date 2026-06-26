@@ -23,6 +23,8 @@
 //   CMsgClientPICSProductInfoRequest                               steammessages_clientserver_appinfo.proto
 //   CMsgClientGetUserStats, CMsgClientGetUserStatsResponse         steammessages_clientserver_userstats.proto
 //   EncryptedAppTicket                                             encrypted_app_ticket.proto
+//   CCloud_* (cloud service methods), CCloud_AppFileInfo,
+//     CCloud_HTTPHeader, ClientCloudFileUploadBlockDetails         steammessages_cloud.steamclient.proto
 syntax = "proto2";
 option optimize_for = LITE_RUNTIME;
 
@@ -266,4 +268,123 @@ message EncryptedAppTicket {
     optional uint32 cb_encrypteduserdata = 3;
     optional uint32 cb_encrypted_appownershipticket = 4;
     optional bytes encrypted_ticket = 5;
+}
+
+// ---- Steam Cloud service methods (csteamcloud) ----
+// Verbatim from steammessages_cloud.steamclient.proto (SteamDatabase/Protobufs).
+
+message CCloud_GetAppFileChangelist_Request {
+	optional uint32 appid = 1;
+	optional uint64 synced_change_number = 2;
+}
+
+message CCloud_AppFileInfo {
+	optional string file_name = 1;
+	optional bytes sha_file = 2;
+	optional uint64 time_stamp = 3;
+	optional uint32 raw_file_size = 4;
+	optional uint32 persist_state = 5;
+	optional uint32 platforms_to_sync = 6;
+	optional uint32 path_prefix_index = 7;
+	optional uint32 machine_name_index = 8;
+}
+
+message CCloud_GetAppFileChangelist_Response {
+	optional uint64 current_change_number = 1;
+	repeated CCloud_AppFileInfo files = 2;
+	optional bool is_only_delta = 3;
+	repeated string path_prefixes = 4;
+	repeated string machine_names = 5;
+	optional uint64 app_buildid_hwm = 6;
+}
+
+message CCloud_HTTPHeader {
+	optional string name = 1;
+	optional string value = 2;
+}
+
+message ClientCloudFileUploadBlockDetails {
+	optional string url_host = 1;
+	optional string url_path = 2;
+	optional bool use_https = 3;
+	optional uint32 http_method = 4;
+	repeated CCloud_HTTPHeader request_headers = 5;
+	optional uint64 block_offset = 6;
+	optional uint32 block_length = 7;
+	optional bytes explicit_body_data = 8;
+	optional bool may_parallelize = 9;
+}
+
+message CCloud_ClientBeginFileUpload_Request {
+	optional uint32 appid = 1;
+	optional uint32 file_size = 2;
+	optional uint32 raw_file_size = 3;
+	optional bytes file_sha = 4;
+	optional uint64 time_stamp = 5;
+	optional string filename = 6;
+	optional uint32 platforms_to_sync = 7;
+	optional uint32 cell_id = 8;
+	optional bool can_encrypt = 9;
+	optional bool is_shared_file = 10;
+	optional uint32 realm = 11;
+	optional uint32 upload_batch_id = 12;
+}
+
+message CCloud_ClientBeginFileUpload_Response {
+	optional bool encrypt_file = 1;
+	repeated ClientCloudFileUploadBlockDetails block_requests = 2;
+}
+
+message CCloud_ClientCommitFileUpload_Request {
+	optional bool transfer_succeeded = 1;
+	optional uint32 appid = 2;
+	optional bytes file_sha = 3;
+	optional string filename = 4;
+	optional uint32 upload_batch_id = 5;
+}
+
+message CCloud_ClientCommitFileUpload_Response {
+	optional bool file_committed = 1;
+}
+
+message CCloud_ClientFileDownload_Request {
+	optional uint32 appid = 1;
+	optional string filename = 2;
+	optional uint32 realm = 3;
+}
+
+message CCloud_ClientFileDownload_Response {
+	optional uint32 file_size = 1;
+	optional uint32 raw_file_size = 2;
+	optional bytes sha_file = 3;
+	optional uint64 time_stamp = 4;
+	optional bool is_explicit_delete = 5;
+	optional string url_host = 6;
+	optional string url_path = 7;
+	optional bool use_https = 8;
+	repeated CCloud_HTTPHeader request_headers = 9;
+	optional bool encrypted = 10;
+}
+
+message CCloud_ClientDeleteFile_Request {
+	optional uint32 appid = 1;
+	optional string filename = 2;
+	optional bool is_explicit_delete = 3;
+	optional uint32 upload_batch_id = 4;
+}
+
+message CCloud_ClientDeleteFile_Response {
+}
+
+message CCloud_GetClientEncryptionKey_Request {
+}
+
+message CCloud_GetAppQuotaUsage_Request {
+	optional uint32 appid = 1;
+}
+
+message CCloud_GetAppQuotaUsage_Response {
+	optional uint32 used_bytes = 1;
+	optional uint32 total_bytes = 2;
+	optional uint64 total_count = 3;
 }
