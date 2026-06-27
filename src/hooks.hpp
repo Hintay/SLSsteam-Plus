@@ -180,6 +180,11 @@ namespace Hooks
 	typedef bool(*IClientAppManager_IsAppDlcInstalled_t)(void*, uint32_t, uint32_t);
 	typedef unsigned int(*IClientApps_GetDLCCount_t)(void*, uint32_t);
 	typedef bool(*IClientApps_BGetDLCDataByIndex_t)(void*, uint32_t, int, uint32_t*, bool*, char*, size_t);
+	// NOTE: 8 args. The 8th (uint32_t* pcubSectionSizes) is an OUT array of per-section
+	// byte sizes — numSections entries that sum to the return value. It must be
+	// forwarded so the callee can populate it; with fewer args the callee reads an
+	// uninitialised stack slot and crashes. The 7th param (uint8_t) is bSharedKVSymbols.
+	typedef int32_t(*IClientApps_GetMultipleAppDataSections_t)(void*, uint32_t, uint32_t*, int32_t, char*, uint32_t, uint8_t, uint32_t*);
 	typedef bool(*IClientRemoteStorage_IsCloudEnabledForApp_t)(void*, uint32_t);
 	typedef void(*IClientRemoteStorage_SetCloudEnabledForApp_t)(void*, uint32_t, bool);
 	typedef uint32_t(*IClientUtils_GetAppId_t)(void*);
@@ -191,6 +196,7 @@ namespace Hooks
 	extern VFTHook<IClientAppManager_IsAppDlcInstalled_t> IClientAppManager_IsAppDlcInstalled;
 
 	extern VFTHook<IClientApps_BGetDLCDataByIndex_t> IClientApps_BGetDLCDataByIndex;
+	extern VFTHook<IClientApps_GetMultipleAppDataSections_t> IClientApps_GetMultipleAppDataSections;
 	extern VFTHook<IClientApps_GetDLCCount_t> IClientApps_GetDLCCount;
 
 	extern VFTHook<IClientRemoteStorage_IsCloudEnabledForApp_t> IClientRemoteStorage_IsCloudEnabledForApp;

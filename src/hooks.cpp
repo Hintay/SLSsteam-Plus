@@ -36,6 +36,7 @@
 #include "feats/forge_ticket.hpp"
 #include "feats/cloudsaves/cloud_enable_policy.hpp"
 #include "feats/cloudsaves/cloud_saves.hpp"
+#include "feats/cloudsaves/cloud_ui_reveal.hpp"
 
 #include "ownership.hpp"
 
@@ -935,6 +936,52 @@ static bool hkClientApps_BGetDLCDataByIndex(void* pClientApps, uint32_t appId, i
 	return ret;
 }
 
+// Lazily-resolved pooled symbol index for the "hidecloudui" UFS key. -1 = unknown.
+static std::atomic<int64_t> g_hideCloudUiIdx{-1};
+
+static void resolveHideCloudUiIdx(uint32_t appId)
+{
+	if (g_hideCloudUiIdx.load(std::memory_order_acquire) >= 0) return;
+	if (!g_pClientApps) return;
+	char inlineBuf[8192];
+	char pooledBuf[8192];
+	int32_t ni = g_pClientApps->getAppDataSection(appId, APPINFOSECTION_UFS, inlineBuf, sizeof(inlineBuf), false);
+	int32_t np = g_pClientApps->getAppDataSection(appId, APPINFOSECTION_UFS, pooledBuf, sizeof(pooledBuf), true);
+	if (ni <= 0 || np <= 0) return;
+	uint32_t idx = 0;
+	if (CloudSaves::ResolvePooledSymbolIndex(
+	        reinterpret_cast<const uint8_t*>(inlineBuf), (size_t)ni,
+	        reinterpret_cast<const uint8_t*>(pooledBuf), (size_t)np,
+	        "hidecloudui", idx))
+	{
+		g_hideCloudUiIdx.store((int64_t)idx, std::memory_order_release);
+		g_pLog->once("CloudSaves: resolved hidecloudui pooled symIdx=0x%x\n", idx);
+	}
+}
+
+static int32_t hkClientApps_GetMultipleAppDataSections(void* pClientApps, uint32_t appId,
+	uint32_t* sections, int32_t numSections, char* buf, uint32_t bufSize, uint8_t bSharedKVSymbols,
+	uint32_t* pcubSectionSizes)
+{
+	int32_t n = Hooks::IClientApps_GetMultipleAppDataSections.originalFn.fn(
+		pClientApps, appId, sections, numSections, buf, bufSize, bSharedKVSymbols, pcubSectionSizes);
+
+	if (n > 0 && bSharedKVSymbols
+	    && g_config.cloudShowHiddenUI.get()
+	    && g_config.cloudMode.get() == CloudMode::Redirect
+	    && Ownership::shouldSpoofOwnership(appId))
+	{
+		resolveHideCloudUiIdx(appId);
+		const int64_t idx = g_hideCloudUiIdx.load(std::memory_order_acquire);
+		if (idx >= 0)
+		{
+			if (CloudSaves::ZeroPooledInt(reinterpret_cast<uint8_t*>(buf), (size_t)n, (uint32_t)idx))
+				g_pLog->once("CloudSaves: revealed cloud UI for %u (hidecloudui->0)\n", appId);
+		}
+	}
+	return n;
+}
+
 __attribute__((hot))
 static void hkClientApps_RunIPCFrame(void* pClientApps, void* a1, void* a2, void* a3)
 {
@@ -948,6 +995,7 @@ static void hkClientApps_RunIPCFrame(void* pClientApps, void* a1, void* a2, void
 
 		installVFT(Hooks::IClientApps_BGetDLCDataByIndex, vft, "IClientApps", "BGetDLCDataByIndex", hkClientApps_BGetDLCDataByIndex);
 		installVFT(Hooks::IClientApps_GetDLCCount,       vft, "IClientApps", "GetDLCCount",       hkClientApps_GetDLCCount);
+		installVFT(Hooks::IClientApps_GetMultipleAppDataSections, vft, "IClientApps", "GetMultipleAppDataSections", hkClientApps_GetMultipleAppDataSections);
 
 		g_pLog->debug("IClientApps->vft at %p\n", vft->vtable);
 
@@ -1776,6 +1824,7 @@ namespace Hooks
 	VFTHook<IClientAppManager_IsAppDlcInstalled_t> IClientAppManager_IsAppDlcInstalled("IClientAppManager::IsAppDlcInstalled");
 
 	VFTHook<IClientApps_BGetDLCDataByIndex_t> IClientApps_BGetDLCDataByIndex("IClientApps::BGetDLCDataByIndex");
+	VFTHook<IClientApps_GetMultipleAppDataSections_t> IClientApps_GetMultipleAppDataSections("IClientApps::GetMultipleAppDataSections");
 	VFTHook<IClientApps_GetDLCCount_t> IClientApps_GetDLCCount("IClientApps::GetDLCCount");
 
 	VFTHook<IClientRemoteStorage_IsCloudEnabledForApp_t> IClientRemoteStorage_IsCloudEnabledForApp("IClientRemoteStorage::IsCloudEnabledForApp");
