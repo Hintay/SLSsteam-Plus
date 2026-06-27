@@ -34,6 +34,7 @@
 #include "feats/requestcode.hpp"
 #include "feats/ticket.hpp"
 #include "feats/forge_ticket.hpp"
+#include "feats/cloudsaves/cloud_enable_policy.hpp"
 #include "feats/cloudsaves/cloud_saves.hpp"
 
 #include "ownership.hpp"
@@ -49,10 +50,13 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cctype>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -1153,6 +1157,51 @@ static uint32_t hkCConfigStore_WriteVdfFile(void* a0, uint32_t a1, uint32_t a2, 
 
 	return Hooks::CConfigStore_WriteVdfFile.tramp.fn(a0, a1, a2, a3, buffer, size);
 }
+// Apps the user has explicitly turned cloud OFF for (respected by the redirect
+// enable-gate override). Seeded once from sharedconfig.vdf (when accountId is
+// known), updated live by the SetCloudEnabledForApp hook.
+static std::mutex g_userDisabledMtx;
+static std::unordered_set<uint32_t> g_userDisabledCloud;
+static std::atomic<bool> g_userDisabledSeeded{false};
+
+static void seedUserDisabledCloud()
+{
+	const uint32_t acc = CloudSaves::accountId();
+	if (!acc) return;  // not resolved yet; caller retries on a later query
+	const char* home = ::getenv("HOME");
+	std::string base = (home && home[0]) ? home : "";
+	std::string path = base + "/.local/share/Steam/userdata/" + std::to_string(acc)
+	                 + "/7/remote/sharedconfig.vdf";
+	std::ifstream f(path, std::ios::binary);
+	if (!f) return;
+	std::stringstream ss; ss << f.rdbuf();
+	std::string text = ss.str();
+	std::unordered_set<uint32_t> parsed;
+	CloudSaves::ParseDisabledCloudApps(text.data(), text.size(), parsed);
+	std::lock_guard<std::mutex> lk(g_userDisabledMtx);
+	for (uint32_t a : parsed) g_userDisabledCloud.insert(a);
+}
+
+// Manual atomic flag (not std::call_once): seeding must be retried until the
+// accountId becomes available, after which it sticks.
+static bool isUserDisabledCloud(uint32_t appId)
+{
+	if (!g_userDisabledSeeded.load(std::memory_order_acquire) && CloudSaves::accountId())
+	{
+		seedUserDisabledCloud();
+		g_userDisabledSeeded.store(true, std::memory_order_release);
+	}
+	std::lock_guard<std::mutex> lk(g_userDisabledMtx);
+	return g_userDisabledCloud.count(appId) != 0;
+}
+
+static bool accountCloudMasterOn(void* pClientRemoteStorage)
+{
+	static const int idx = VtableScan::slotOf("IClientRemoteStorage", "IsCloudEnabledForAccount");
+	if (idx < 0) return true;  // unknown -> don't suppress
+	return IpcOutbound::callAt<bool(*)(void*)>(idx, pClientRemoteStorage);
+}
+
 static bool hkClientRemoteStorage_IsCloudEnabledForApp(void* pClientRemoteStorage, uint32_t appId)
 {
 	const bool enabled = Hooks::IClientRemoteStorage_IsCloudEnabledForApp.originalFn.fn(pClientRemoteStorage, appId);
@@ -1200,11 +1249,33 @@ static bool hkClientRemoteStorage_IsCloudEnabledForApp(void* pClientRemoteStorag
 		return false;
 	}
 
+	if (g_config.cloudMode.get() == CloudMode::Redirect
+	    && Ownership::shouldSpoofOwnership(appId))
+	{
+		const bool decided = CloudSaves::DecideCloudEnabled(
+			enabled,
+			isUserDisabledCloud(appId),
+			accountCloudMasterOn(pClientRemoteStorage));
+		g_pLog->once("CloudSaves: IsCloudEnabledForApp(%u) %i -> %i (redirect override)\n",
+		             appId, enabled ? 1 : 0, decided ? 1 : 0);
+		return decided;
+	}
 	return enabled;
 }
 
 static bool g_bUpdateAppDownloadPlanReady = false;
 static bool g_bConfigStoreWriteVdfFileReady = false;
+
+static void hkClientRemoteStorage_SetCloudEnabledForApp(void* pClientRemoteStorage, uint32_t appId, bool enabled)
+{
+	{
+		std::lock_guard<std::mutex> lk(g_userDisabledMtx);
+		if (enabled) g_userDisabledCloud.erase(appId);
+		else         g_userDisabledCloud.insert(appId);
+	}
+	g_pLog->debug("CloudSaves: SetCloudEnabledForApp(%u, %i) recorded\n", appId, enabled ? 1 : 0);
+	Hooks::IClientRemoteStorage_SetCloudEnabledForApp.originalFn.fn(pClientRemoteStorage, appId, enabled);
+}
 
 static void hkClientRemoteStorage_RunIPCFrame(void* pClientRemoteStorage, void* a1, void* a2, void* a3)
 {
@@ -1216,6 +1287,7 @@ static void hkClientRemoteStorage_RunIPCFrame(void* pClientRemoteStorage, void* 
 		LM_VmtNew(*reinterpret_cast<lm_address_t**>(pClientRemoteStorage), vft.get());
 
 		installVFT(Hooks::IClientRemoteStorage_IsCloudEnabledForApp, vft, "IClientRemoteStorage", "IsCloudEnabledForApp", hkClientRemoteStorage_IsCloudEnabledForApp);
+		installVFT(Hooks::IClientRemoteStorage_SetCloudEnabledForApp, vft, "IClientRemoteStorage", "SetCloudEnabledForApp", hkClientRemoteStorage_SetCloudEnabledForApp);
 
 		g_pLog->debug("IClientRemoteStorage->vft at %p\n", vft->vtable);
 
@@ -1707,6 +1779,7 @@ namespace Hooks
 	VFTHook<IClientApps_GetDLCCount_t> IClientApps_GetDLCCount("IClientApps::GetDLCCount");
 
 	VFTHook<IClientRemoteStorage_IsCloudEnabledForApp_t> IClientRemoteStorage_IsCloudEnabledForApp("IClientRemoteStorage::IsCloudEnabledForApp");
+	VFTHook<IClientRemoteStorage_SetCloudEnabledForApp_t> IClientRemoteStorage_SetCloudEnabledForApp("IClientRemoteStorage::SetCloudEnabledForApp");
 
 	VFTHook<IClientUtils_GetAppId_t> IClientUtils_GetAppId("IClientUtils::GetAppID");
 	VFTHook<IClientUtils_GetOfflineMode_t> IClientUtils_GetOfflineMode("IClientUtils::GetOfflineMode");

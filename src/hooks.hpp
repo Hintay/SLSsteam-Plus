@@ -181,6 +181,7 @@ namespace Hooks
 	typedef unsigned int(*IClientApps_GetDLCCount_t)(void*, uint32_t);
 	typedef bool(*IClientApps_BGetDLCDataByIndex_t)(void*, uint32_t, int, uint32_t*, bool*, char*, size_t);
 	typedef bool(*IClientRemoteStorage_IsCloudEnabledForApp_t)(void*, uint32_t);
+	typedef void(*IClientRemoteStorage_SetCloudEnabledForApp_t)(void*, uint32_t, bool);
 	typedef uint32_t(*IClientUtils_GetAppId_t)(void*);
 	typedef uint32_t(*CConfigStore_WriteVdfFile_t)(void*, uint32_t, uint32_t, void*, const char*, uint32_t);
 
@@ -193,6 +194,7 @@ namespace Hooks
 	extern VFTHook<IClientApps_GetDLCCount_t> IClientApps_GetDLCCount;
 
 	extern VFTHook<IClientRemoteStorage_IsCloudEnabledForApp_t> IClientRemoteStorage_IsCloudEnabledForApp;
+	extern VFTHook<IClientRemoteStorage_SetCloudEnabledForApp_t> IClientRemoteStorage_SetCloudEnabledForApp;
 	extern DetourHook<CConfigStore_WriteVdfFile_t> CConfigStore_WriteVdfFile;
 
 	extern VFTHook<IClientUtils_GetAppId_t> IClientUtils_GetAppId;
