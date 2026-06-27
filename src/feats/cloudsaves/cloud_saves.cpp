@@ -145,7 +145,10 @@ void shutdown() {
 void setAccountId(uint32_t accountId) { g_accountId.store(accountId, std::memory_order_release); }
 
 bool handlesApp(uint32_t appId) {
-    return g_config.cloudMode.get() == CloudMode::Redirect && Ownership::isControlledApp(appId);
+    // Redirect only apps whose ownership we actually fake — mirrors OST feeding
+    // CloudRedirect just the unlocked set. A genuinely-owned app (even if listed
+    // in AdditionalApps) keeps using real Steam Cloud rather than the local store.
+    return g_config.cloudMode.get() == CloudMode::Redirect && Ownership::shouldSpoofOwnership(appId);
 }
 
 bool onSendFrame(const uint8_t* pubData, uint32_t cubData) {
