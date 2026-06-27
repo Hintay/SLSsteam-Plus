@@ -2,12 +2,11 @@
 #include "manifest.hpp"
 #include "sha1.hpp"
 
-#include <atomic>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
-#include <unordered_map>
+#include <utime.h>
 
 namespace fs = std::filesystem;
 
@@ -32,7 +31,16 @@ Manifest loadManifest(const std::string& dir) {
     return m;
 }
 
-bool saveManifest(const std::string& dir, const Manifest& m) {
+// change_number is derived from content: the max file timestamp. Kept in sync
+// inside the persisted manifest too, purely for human readability.
+uint64_t maxTimestamp(const Manifest& m) {
+    uint64_t cn = 0;
+    for (const auto& [k, v] : m.files) if (v.timestamp > cn) cn = v.timestamp;
+    return cn;
+}
+
+bool saveManifest(const std::string& dir, Manifest& m) {
+    m.changeNumber = maxTimestamp(m);
     std::error_code ec;
     fs::create_directories(dir, ec);
     std::string tmp = manifestPath(dir) + ".tmp";
@@ -59,6 +67,14 @@ std::string stagingName(const std::string& relPath) {
     for (char c : relPath) { if (c == '/') s += "%2f"; else s += c; }
     return s;
 }
+
+void applyMtime(const std::string& path, uint64_t timestamp) {
+    if (!timestamp) return;
+    struct utimbuf ut;
+    ut.actime = static_cast<time_t>(timestamp);
+    ut.modtime = static_cast<time_t>(timestamp);
+    ::utime(path.c_str(), &ut);   // best-effort; ignore failure
+}
 }  // namespace
 
 SaveStore::SaveStore(std::string rootDir) : m_root(std::move(rootDir)) {}
@@ -72,7 +88,8 @@ std::string SaveStore::beginStaging(uint32_t acc, uint32_t app, const std::strin
     return stagingDir(d) + "/" + stagingName(relPath);
 }
 
-bool SaveStore::commit(uint32_t acc, uint32_t app, const std::string& relPath) {
+bool SaveStore::commit(uint32_t acc, uint32_t app, const std::string& relPath,
+                       uint64_t timestamp) {
     std::lock_guard<std::mutex> lk(g_lock);
     std::string d = appDir(m_root, acc, app);
     std::string staged = stagingDir(d) + "/" + stagingName(relPath);
@@ -95,22 +112,37 @@ bool SaveStore::commit(uint32_t acc, uint32_t app, const std::string& relPath) {
         fs::remove(staged, ec);
     }
 
+    const uint64_t ts = timestamp ? timestamp : static_cast<uint64_t>(::time(nullptr));
+    applyMtime(dst, ts);
+
     Manifest m = loadManifest(d);
     FileEntry fe;
     fe.relPath = relPath;
     fe.shaHex = Sha1Hex(bytes.data(), bytes.size());
     fe.size = bytes.size();
-    fe.timestamp = static_cast<uint64_t>(::time(nullptr));
+    fe.timestamp = ts;
     m.files[relPath] = fe;
-    m.changeNumber += 1;
     return saveManifest(d, m);
 }
 
 bool SaveStore::read(uint32_t acc, uint32_t app, const std::string& relPath,
                      std::vector<uint8_t>& out) {
     std::lock_guard<std::mutex> lk(g_lock);
-    std::string dst = filesDir(appDir(m_root, acc, app)) + "/" + relPath;
-    return readFileBytes(dst, out);
+    std::string d = appDir(m_root, acc, app);
+
+    // The manifest is authoritative: only serve a file it knows about, and only
+    // if the on-disk bytes hash to the recorded SHA (rejects partial sync / corruption).
+    Manifest m = loadManifest(d);
+    auto it = m.files.find(relPath);
+    if (it == m.files.end()) return false;
+
+    std::vector<uint8_t> bytes;
+    if (!readFileBytes(filesDir(d) + "/" + relPath, bytes)) return false;
+    if (bytes.size() != it->second.size) return false;
+    if (Sha1Hex(bytes.data(), bytes.size()) != it->second.shaHex) return false;
+
+    out = std::move(bytes);
+    return true;
 }
 
 bool SaveStore::remove(uint32_t acc, uint32_t app, const std::string& relPath) {
@@ -123,7 +155,6 @@ bool SaveStore::remove(uint32_t acc, uint32_t app, const std::string& relPath) {
     auto it = m.files.find(relPath);
     if (it == m.files.end() && !existed) return false;
     if (it != m.files.end()) m.files.erase(it);
-    m.changeNumber += 1;
     return saveManifest(d, m);
 }
 
@@ -136,9 +167,32 @@ std::vector<FileEntry> SaveStore::list(uint32_t acc, uint32_t app) {
     return out;
 }
 
+bool SaveStore::entry(uint32_t acc, uint32_t app, const std::string& relPath,
+                      FileEntry& out) {
+    std::lock_guard<std::mutex> lk(g_lock);
+    Manifest m = loadManifest(appDir(m_root, acc, app));
+    auto it = m.files.find(relPath);
+    if (it == m.files.end()) return false;
+    out = it->second;
+    return true;
+}
+
+bool SaveStore::isComplete(uint32_t acc, uint32_t app) {
+    std::lock_guard<std::mutex> lk(g_lock);
+    std::string d = appDir(m_root, acc, app);
+    Manifest m = loadManifest(d);
+    std::error_code ec;
+    for (const auto& [rel, fe] : m.files) {
+        std::string p = filesDir(d) + "/" + rel;
+        if (!fs::exists(p, ec)) return false;
+        if (static_cast<uint64_t>(fs::file_size(p, ec)) != fe.size || ec) return false;
+    }
+    return true;
+}
+
 uint64_t SaveStore::changeNumber(uint32_t acc, uint32_t app) {
     std::lock_guard<std::mutex> lk(g_lock);
-    return loadManifest(appDir(m_root, acc, app)).changeNumber;
+    return maxTimestamp(loadManifest(appDir(m_root, acc, app)));
 }
 
 void SaveStore::sweepStaging() {

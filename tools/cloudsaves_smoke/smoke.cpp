@@ -58,12 +58,13 @@ static void test_savestore_write_read_delete() {
         std::fwrite(data, 1, 5, f);
         std::fclose(f);
     }
-    CHECK(store.commit(123, 480, "save/slot0.dat"));
+    CHECK(store.commit(123, 480, "save/slot0.dat", /*timestamp=*/1700000000));
 
-    // change number bumped to 1
-    CHECK(store.changeNumber(123, 480) == 1);
+    // change_number is content-derived: the max file timestamp.
+    CHECK(store.changeNumber(123, 480) == 1700000000ull);
+    CHECK(store.isComplete(123, 480));
 
-    // read back
+    // read back (SHA-verified internally)
     std::vector<uint8_t> out;
     CHECK(store.read(123, 480, "save/slot0.dat", out));
     CHECK(out.size() == 5);
@@ -74,11 +75,12 @@ static void test_savestore_write_read_delete() {
     CHECK(files.size() == 1);
     CHECK(files[0].relPath == "save/slot0.dat");
     CHECK(files[0].size == 5);
+    CHECK(files[0].timestamp == 1700000000ull);
     CHECK(files[0].shaHex == "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"); // sha1("hello")
 
-    // delete bumps change number, removes file
+    // delete removes file; change_number drops back to 0 (no files left)
     CHECK(store.remove(123, 480, "save/slot0.dat"));
-    CHECK(store.changeNumber(123, 480) == 2);
+    CHECK(store.changeNumber(123, 480) == 0);
     std::vector<uint8_t> gone;
     CHECK(!store.read(123, 480, "save/slot0.dat", gone));
 }
@@ -90,11 +92,11 @@ static void test_savestore_manifest_persists() {
         CloudSaves::SaveStore store(root);
         std::string s = store.beginStaging(1, 2, "a.dat");
         FILE* f = std::fopen(s.c_str(), "wb"); std::fwrite("x", 1, 1, f); std::fclose(f);
-        store.commit(1, 2, "a.dat");
+        store.commit(1, 2, "a.dat", /*timestamp=*/1700000123);
     }
     // New instance reads persisted manifest
     CloudSaves::SaveStore store2(root);
-    CHECK(store2.changeNumber(1, 2) == 1);
+    CHECK(store2.changeNumber(1, 2) == 1700000123ull);
     auto files = store2.list(1, 2);
     CHECK(files.size() == 1);
 }
@@ -152,6 +154,7 @@ static void test_upload_commit_download_cycle() {
     // BeginUpload -> response carries a PUT URL at our port
     CCloud_ClientBeginFileUpload_Request beg;
     beg.set_appid(480); beg.set_filename("save/a.dat"); beg.set_file_size(5);
+    beg.set_time_stamp(1700001234);  // Steam's authoritative save time
     std::string respBytes; int32_t e = 0;
     CHECK(eng.handle("Cloud.ClientBeginFileUpload#1", 480, 777, beg.SerializeAsString(), respBytes, e));
     CHECK(e == 1);
@@ -173,7 +176,7 @@ static void test_upload_commit_download_cycle() {
     CCloud_ClientCommitFileUpload_Response comResp;
     CHECK(comResp.ParseFromString(respBytes));
     CHECK(comResp.file_committed() == true);
-    CHECK(store.changeNumber(777, 480) == 1);
+    CHECK(store.changeNumber(777, 480) == 1700001234ull);  // commit recorded Steam's timestamp
 
     // Changelist now full (is_only_delta=0, 1 file)
     CCloud_GetAppFileChangelist_Request cl; cl.set_appid(480);
@@ -191,11 +194,63 @@ static void test_upload_commit_download_cycle() {
     CCloud_ClientFileDownload_Response dlResp; dlResp.ParseFromString(respBytes);
     CHECK(dlResp.url_host() == "127.0.0.1:23456");
     CHECK(dlResp.file_size() == 5);
+    CHECK(dlResp.time_stamp() == 1700001234ull);            // echoed for newest-wins
+    CHECK(dlResp.sha_file().size() == 20);                  // 20-byte SHA-1 echoed
 
     // Delete
     CCloud_ClientDeleteFile_Request del; del.set_appid(480); del.set_filename("save/a.dat");
     CHECK(eng.handle("Cloud.ClientDeleteFile#1", 480, 777, del.SerializeAsString(), respBytes, e));
-    CHECK(store.changeNumber(777, 480) == 2);
+    CHECK(store.changeNumber(777, 480) == 0);  // last file gone -> derived CN back to 0
+}
+
+// ---- Model E: completeness gate + read integrity (multi-machine safety) ----
+static void test_savestore_completeness_and_integrity() {
+    std::string root = "/tmp/sls_cs_complete";
+    std::filesystem::remove_all(root);
+    CloudSaves::SaveStore store(root);
+    std::string s = store.beginStaging(5, 9, "d/f.dat");
+    { FILE* f = std::fopen(s.c_str(), "wb"); std::fwrite("abc", 1, 3, f); std::fclose(f); }
+    CHECK(store.commit(5, 9, "d/f.dat", 1700000000));
+    CHECK(store.isComplete(5, 9));
+
+    const std::string onDisk = root + "/5/9/files/d/f.dat";
+
+    // Corrupted bytes (partial sync): size/SHA disagree with manifest -> refuse to serve.
+    { FILE* f = std::fopen(onDisk.c_str(), "wb"); std::fwrite("XYZ!", 1, 4, f); std::fclose(f); }
+    std::vector<uint8_t> out;
+    CHECK(!store.read(5, 9, "d/f.dat", out));
+    CHECK(!store.isComplete(5, 9));            // size mismatch -> incomplete
+
+    // Missing file (mid-sync): manifest knows it, disk doesn't -> incomplete, no serve.
+    std::filesystem::remove(onDisk);
+    CHECK(!store.isComplete(5, 9));
+    std::vector<uint8_t> out2;
+    CHECK(!store.read(5, 9, "d/f.dat", out2));
+}
+
+static void test_changelist_incomplete_is_delta() {
+    std::filesystem::remove_all("/tmp/sls_cs_incpl");
+    CloudSaves::SaveStore store("/tmp/sls_cs_incpl");
+    CloudSaves::RpcEngine eng(store, 34567);
+    std::string s = store.beginStaging(7, 11, "x.dat");
+    { FILE* f = std::fopen(s.c_str(), "wb"); std::fwrite("data", 1, 4, f); std::fclose(f); }
+    CHECK(store.commit(7, 11, "x.dat", 1700000000));
+
+    CCloud_GetAppFileChangelist_Request cl; cl.set_appid(11);
+    std::string respBytes; int32_t e = 0;
+
+    // Complete store -> authoritative full list (is_only_delta=0).
+    CHECK(eng.handle("Cloud.GetAppFileChangelist#1", 11, 7, cl.SerializeAsString(), respBytes, e));
+    CCloud_GetAppFileChangelist_Response r1; r1.ParseFromString(respBytes);
+    CHECK(r1.is_only_delta() == false);
+    CHECK(r1.files_size() == 1);
+
+    // Mid-sync: the on-disk file is gone but the manifest still lists it. Must NOT
+    // present as authoritative, else Steam would treat it as a deletion.
+    std::filesystem::remove("/tmp/sls_cs_incpl/7/11/files/x.dat");
+    CHECK(eng.handle("Cloud.GetAppFileChangelist#1", 11, 7, cl.SerializeAsString(), respBytes, e));
+    CCloud_GetAppFileChangelist_Response r2; r2.ParseFromString(respBytes);
+    CHECK(r2.is_only_delta() == true);
 }
 
 // ---- binary-KV (appinfo UFS) quota parsing -------------------------------
@@ -322,6 +377,8 @@ int main() {
     test_changelist_empty_is_delta();
     test_changelist_unresolved_account_is_delta();
     test_upload_commit_download_cycle();
+    test_savestore_completeness_and_integrity();
+    test_changelist_incomplete_is_delta();
     test_ufs_quota_typed_int();
     test_ufs_quota_string_values();
     test_ufs_quota_uint64_and_nested();

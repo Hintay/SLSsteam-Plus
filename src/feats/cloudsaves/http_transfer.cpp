@@ -34,6 +34,24 @@ std::string urlDecode(const std::string& s) {
     return out;
 }
 
+// Reject path traversal on a decoded relative path. Component-based so a literal
+// ".." inside a name (e.g. "save..bak") is allowed; only a "/../" path segment,
+// an absolute path, or an embedded NUL is refused. '/' is the only separator on
+// the Linux store, so backslash and ':' are treated as ordinary filename bytes.
+bool isSafeRelPath(const std::string& rel) {
+    if (rel.empty()) return false;
+    if (rel.find('\0') != std::string::npos) return false;
+    if (rel.front() == '/') return false;                 // absolute
+    size_t start = 0;
+    for (size_t i = 0; i <= rel.size(); ++i) {
+        if (i == rel.size() || rel[i] == '/') {
+            if (rel.compare(start, i - start, "..") == 0) return false;
+            start = i + 1;
+        }
+    }
+    return true;
+}
+
 // Path: /<acc>/<app>/<urlencoded-relpath>. relpath may contain encoded slashes.
 bool parsePath(const std::string& path, uint32_t& acc, uint32_t& app, std::string& rel) {
     if (path.empty() || path[0] != '/') return false;
@@ -44,7 +62,7 @@ bool parsePath(const std::string& path, uint32_t& acc, uint32_t& app, std::strin
     acc = std::strtoul(path.substr(1, a - 1).c_str(), nullptr, 10);
     app = std::strtoul(path.substr(a + 1, b - a - 1).c_str(), nullptr, 10);
     rel = urlDecode(path.substr(b + 1));
-    if (rel.empty() || rel.find("..") != std::string::npos) return false;  // traversal guard
+    if (!isSafeRelPath(rel)) return false;  // traversal guard
     return true;
 }
 

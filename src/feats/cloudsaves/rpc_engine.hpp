@@ -1,7 +1,9 @@
 #pragma once
 #include "save_store.hpp"
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace CloudSaves {
 
@@ -36,6 +38,12 @@ private:
     SaveStore& m_store;
     uint16_t   m_port;
     uint64_t (*m_quotaFn)(uint32_t, uint32_t&) = nullptr;
+
+    // BeginFileUpload carries Steam's authoritative save timestamp, but the
+    // matching CommitFileUpload does not. Remember it between the two RPCs so
+    // commit can record the real time (keeps newest-wins correct across machines).
+    std::mutex m_pendingMtx;
+    std::unordered_map<std::string, uint64_t> m_pendingTs;  // "acc/app/filename" -> timestamp
 };
 
 }  // namespace CloudSaves

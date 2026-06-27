@@ -66,9 +66,13 @@ bool RpcEngine::handleChangelist(uint32_t appId, uint32_t accountId,
         return true;
     }
 
-    // Full manifest: list every file, is_only_delta=0.
+    // Completeness gate: if the store is mid-sync (a manifest file is missing or
+    // size-mismatched on disk), do NOT present this as the authoritative full set
+    // -- mark is_only_delta so Steam treats unlisted files as "unknown", not
+    // "deleted". Prevents a partial Syncthing/rclone sync from wiping real saves.
+    const bool complete = m_store.isComplete(accountId, appId);
     resp.set_current_change_number(m_store.changeNumber(accountId, appId));
-    resp.set_is_only_delta(false);
+    resp.set_is_only_delta(!complete);
     // path-prefix table: split each relPath into dir prefix + leaf.
     std::vector<std::string> prefixes;
     auto prefixIndex = [&](const std::string& dir) -> uint32_t {
@@ -102,6 +106,14 @@ bool RpcEngine::handleBeginUpload(uint32_t appId, uint32_t accountId,
                                   const std::string& reqBytes, std::string& respBytes, int32_t& eresult) {
     CCloud_ClientBeginFileUpload_Request req;
     if (!req.ParseFromString(reqBytes) || accountId == 0) { respBytes.clear(); eresult = 2; return true; }
+
+    // Remember Steam's authoritative save timestamp until the matching commit.
+    {
+        std::lock_guard<std::mutex> lk(m_pendingMtx);
+        m_pendingTs[std::to_string(accountId) + "/" + std::to_string(appId) + "/" + req.filename()]
+            = req.has_time_stamp() ? req.time_stamp() : 0;
+    }
+
     CCloud_ClientBeginFileUpload_Response resp;
     resp.set_encrypt_file(false);
     auto* blk = resp.add_block_requests();
@@ -121,7 +133,15 @@ bool RpcEngine::handleCommitUpload(uint32_t appId, uint32_t accountId,
                                    const std::string& reqBytes, std::string& respBytes, int32_t& eresult) {
     CCloud_ClientCommitFileUpload_Request req;
     if (!req.ParseFromString(reqBytes) || accountId == 0) { respBytes.clear(); eresult = 2; return true; }
-    bool ok = m_store.commit(accountId, appId, req.filename());
+
+    uint64_t ts = 0;
+    {
+        std::lock_guard<std::mutex> lk(m_pendingMtx);
+        auto key = std::to_string(accountId) + "/" + std::to_string(appId) + "/" + req.filename();
+        auto it = m_pendingTs.find(key);
+        if (it != m_pendingTs.end()) { ts = it->second; m_pendingTs.erase(it); }
+    }
+    bool ok = m_store.commit(accountId, appId, req.filename(), ts);
     CCloud_ClientCommitFileUpload_Response resp;
     resp.set_file_committed(ok);
     respBytes = resp.SerializeAsString();
@@ -133,11 +153,23 @@ bool RpcEngine::handleDownload(uint32_t appId, uint32_t accountId,
                                const std::string& reqBytes, std::string& respBytes, int32_t& eresult) {
     CCloud_ClientFileDownload_Request req;
     if (!req.ParseFromString(reqBytes) || accountId == 0) { respBytes.clear(); eresult = 2; return true; }
+    // read() SHA-verifies against the manifest, so a partially-synced or corrupt
+    // file fails here rather than being served back into the game.
     std::vector<uint8_t> bytes;
     if (!m_store.read(accountId, appId, req.filename(), bytes)) { respBytes.clear(); eresult = 9; return true; } // FileNotFound
     CCloud_ClientFileDownload_Response resp;
     resp.set_file_size(static_cast<uint32_t>(bytes.size()));
     resp.set_raw_file_size(static_cast<uint32_t>(bytes.size()));
+    // Echo the recorded SHA + timestamp so Steam can verify the transfer and
+    // resolve newest-wins correctly against the local save.
+    FileEntry fe;
+    if (m_store.entry(accountId, appId, req.filename(), fe)) {
+        std::string raw;
+        for (size_t i = 0; i + 1 < fe.shaHex.size(); i += 2)
+            raw += static_cast<char>(std::strtol(fe.shaHex.substr(i, 2).c_str(), nullptr, 16));
+        resp.set_sha_file(raw);
+        resp.set_time_stamp(fe.timestamp);
+    }
     resp.set_url_host("127.0.0.1:" + std::to_string(m_port));
     resp.set_url_path("/" + std::to_string(accountId) + "/" + std::to_string(appId) + "/" + urlEncode(req.filename()));
     resp.set_use_https(false);
