@@ -46,8 +46,7 @@ bool RpcEngine::handle(const std::string& jobName, uint32_t appId, uint32_t acco
     if (is("ClientCommitFileUpload"))return handleCommitUpload(appId, accountId, reqBytes, respBytes, eresult);
     if (is("ClientFileDownload"))    return handleDownload(appId, accountId, reqBytes, respBytes, eresult);
     if (is("ClientDeleteFile"))      return handleDelete(appId, accountId, reqBytes, respBytes, eresult);
-    if (is("GetAppQuotaUsage") || is("GetClientQuotaUsage"))
-                                     return handleQuota(appId, accountId, reqBytes, respBytes, eresult);
+    if (is("ClientGetAppQuotaUsage")) return handleQuota(appId, accountId, reqBytes, respBytes, eresult);
     return false;
 }
 
@@ -198,10 +197,11 @@ bool RpcEngine::handleQuota(uint32_t appId, uint32_t accountId,
     uint64_t maxBytes = 1073741824ULL;  // 1 GiB default
     uint32_t maxFiles = 10000;
     if (m_quotaFn) { uint32_t mf = 0; uint64_t q = m_quotaFn(appId, mf); if (q) { maxBytes = q; maxFiles = mf; } }
-    CCloud_GetAppQuotaUsage_Response resp;
-    resp.set_used_bytes(static_cast<uint32_t>(usedBytes));
-    resp.set_total_bytes(static_cast<uint32_t>(maxBytes));
-    resp.set_total_count(count);
+    CCloud_ClientGetAppQuotaUsage_Response resp;
+    resp.set_existing_files(static_cast<uint32_t>(count));
+    resp.set_existing_bytes(usedBytes);
+    resp.set_max_num_files(maxFiles);
+    resp.set_max_num_bytes(maxBytes);
     respBytes = resp.SerializeAsString();
     eresult = kEResultOK;
     return true;
