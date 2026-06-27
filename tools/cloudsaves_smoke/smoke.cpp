@@ -17,6 +17,8 @@
 #include "slssteam_messages.pb.h"
 #include "feats/cloudsaves/rpc_engine.hpp"
 #include "feats/cloudsaves/cloud_ui_reveal.hpp"
+#include "feats/cloudsaves/cloud_enable_policy.hpp"
+#include <unordered_set>
 
 static int g_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { \
@@ -439,6 +441,29 @@ static void test_reveal_zero_past_int64_and_altend() {
     assert(buf[voff] == 0 && buf[voff+1] == 0 && buf[voff+2] == 0 && buf[voff+3] == 0);
 }
 
+static void test_enable_decision_table() {
+    using CloudSaves::DecideCloudEnabled;
+    assert(DecideCloudEnabled(true,  false, true)  == true);   // already on
+    assert(DecideCloudEnabled(true,  true,  true)  == true);   // already on wins
+    assert(DecideCloudEnabled(false, true,  true)  == false);  // user off
+    assert(DecideCloudEnabled(false, false, false) == false);  // master off
+    assert(DecideCloudEnabled(false, false, true)  == true);   // force on
+}
+
+static void test_parse_disabled_cloud_apps() {
+    const char* vdf =
+        "\"apps\"\n{\n"
+        "  \"480490\"\n  {\n    \"cloudenabled\"\t\"0\"\n  }\n"
+        "  \"2701440\"\n  {\n    \"cloudenabled\"\t\"1\"\n  }\n"
+        "  \"3756940\"\n  {\n  }\n"
+        "}\n";
+    std::unordered_set<uint32_t> out;
+    CloudSaves::ParseDisabledCloudApps(vdf, std::strlen(vdf), out);
+    assert(out.count(480490) == 1);
+    assert(out.count(2701440) == 0);
+    assert(out.count(3756940) == 0);
+}
+
 int main() {
     test_sha1_known_vectors();
     test_manifest_roundtrip();
@@ -459,6 +484,8 @@ int main() {
     test_reveal_resolve_index();
     test_reveal_zero_pooled_int();
     test_reveal_zero_past_int64_and_altend();
+    test_enable_decision_table();
+    test_parse_disabled_cloud_apps();
     if (g_failures) { std::printf("%d check(s) failed\n", g_failures); return 1; }
     std::printf("all cloudsaves smoke checks passed\n");
     return 0;
