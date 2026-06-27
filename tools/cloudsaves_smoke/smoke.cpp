@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <filesystem>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "feats/cloudsaves/appinfo_kv.hpp"
 #include "slssteam_messages.pb.h"
 #include "feats/cloudsaves/rpc_engine.hpp"
+#include "feats/cloudsaves/cloud_ui_reveal.hpp"
 
 static int g_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { \
@@ -368,6 +370,75 @@ static void test_ufs_quota_zero_fails_and_truncation_safe() {
     CHECK(true);  // reached here without crashing
 }
 
+// Real UFS dumps for app 3756940 (The Ratline), captured live.
+static const unsigned char kUfsInline[] = {
+    0x00,'u','f','s',0x00,
+    0x02,'q','u','o','t','a',0x00, 0xa0,0x86,0x01,0x00,
+    0x02,'m','a','x','n','u','m','f','i','l','e','s',0x00, 0x64,0x00,0x00,0x00,
+    0x02,'i','g','n','o','r','e','e','x','t','e','r','n','a','l','f','i','l','e','s',0x00, 0x01,0x00,0x00,0x00,
+    0x02,'h','i','d','e','c','l','o','u','d','u','i',0x00, 0x01,0x00,0x00,0x00,
+    0x08, 0x08
+};
+// ufs=0x00004f3b quota=0x0624 maxnumfiles=0x062a ignoreexternalfiles=0x75c1 hidecloudui=0x0618
+static unsigned char kUfsPooled[] = {
+    0x00, 0x3b,0x4f,0x00,0x00,
+    0x02, 0x24,0x06,0x00,0x00, 0xa0,0x86,0x01,0x00,
+    0x02, 0x2a,0x06,0x00,0x00, 0x64,0x00,0x00,0x00,
+    0x02, 0xc1,0x75,0x00,0x00, 0x01,0x00,0x00,0x00,
+    0x02, 0x18,0x06,0x00,0x00, 0x01,0x00,0x00,0x00,
+    0x08, 0x08
+};
+
+static void test_reveal_resolve_index() {
+    uint32_t idx = 0;
+    bool ok = CloudSaves::ResolvePooledSymbolIndex(
+        kUfsInline, sizeof(kUfsInline), kUfsPooled, sizeof(kUfsPooled),
+        "hidecloudui", idx);
+    assert(ok);
+    assert(idx == 0x0618);
+    uint32_t qidx = 0;
+    assert(CloudSaves::ResolvePooledSymbolIndex(
+        kUfsInline, sizeof(kUfsInline), kUfsPooled, sizeof(kUfsPooled),
+        "quota", qidx));
+    assert(qidx == 0x0624);
+    uint32_t bad = 123;
+    assert(!CloudSaves::ResolvePooledSymbolIndex(
+        kUfsInline, sizeof(kUfsInline), kUfsPooled, sizeof(kUfsPooled),
+        "doesnotexist", bad));
+}
+
+static void test_reveal_zero_pooled_int() {
+    unsigned char buf[sizeof(kUfsPooled)];
+    std::memcpy(buf, kUfsPooled, sizeof(kUfsPooled));
+    bool changed = CloudSaves::ZeroPooledInt(buf, sizeof(buf), 0x0618);
+    assert(changed);
+    size_t voff = sizeof(buf) - 2 - 4;
+    assert(buf[voff] == 0 && buf[voff+1] == 0 && buf[voff+2] == 0 && buf[voff+3] == 0);
+    assert(sizeof(buf) == sizeof(kUfsPooled));
+    unsigned char buf2[sizeof(kUfsPooled)];
+    std::memcpy(buf2, kUfsPooled, sizeof(kUfsPooled));
+    assert(!CloudSaves::ZeroPooledInt(buf2, sizeof(buf2), 0xDEADBEEF));
+}
+
+// Regression: GetMultipleAppDataSections returns a COMBINED common+extended+ufs
+// buffer whose earlier sections contain int64 (0x0a) and alt-end (0x0b) nodes.
+// The walkers must skip past these to reach a later hidecloudui int32. With the
+// pre-fix type table they aborted at the first int64 and silently failed.
+static void test_reveal_zero_past_int64_and_altend() {
+    unsigned char buf[] = {
+        0x00, 0x00,0x02,0x00,0x00,            // nested "common"-like subkey, idx 0x0200
+          0x07, 0x01,0x01,0x00,0x00, 1,2,3,4,5,6,7,8,  // uint64 (already handled)
+          0x0a, 0x02,0x01,0x00,0x00, 8,7,6,5,4,3,2,1,  // int64 (NEW: previously aborted)
+          0x0b,                              // alt-end of the subkey (NEW)
+        0x02, 0x18,0x06,0x00,0x00, 0x01,0x00,0x00,0x00, // hidecloudui int32 = 1, idx 0x0618
+        0x08                                 // end
+    };
+    size_t voff = sizeof(buf) - 1 - 4;  // value of the trailing hidecloudui int32
+    bool changed = CloudSaves::ZeroPooledInt(buf, sizeof(buf), 0x0618);
+    assert(changed);
+    assert(buf[voff] == 0 && buf[voff+1] == 0 && buf[voff+2] == 0 && buf[voff+3] == 0);
+}
+
 int main() {
     test_sha1_known_vectors();
     test_manifest_roundtrip();
@@ -385,6 +456,9 @@ int main() {
     test_ufs_quota_missing_field_fails();
     test_ufs_quota_implausible_fails();
     test_ufs_quota_zero_fails_and_truncation_safe();
+    test_reveal_resolve_index();
+    test_reveal_zero_pooled_int();
+    test_reveal_zero_past_int64_and_altend();
     if (g_failures) { std::printf("%d check(s) failed\n", g_failures); return 1; }
     std::printf("all cloudsaves smoke checks passed\n");
     return 0;
