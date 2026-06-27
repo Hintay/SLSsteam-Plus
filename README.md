@@ -4,25 +4,33 @@
 ## Index
 
 1. [About this hard fork](#about-this-hard-fork)
-2. [Getting started](#getting-started)
-3. [Hall of Fame 👑](#hall-of-fame-aka-credits)
-4. [Hall of Shame 🚨](#hall-of-shame-aka-scammers-leechers-etc)
-5. [Support](#support)
-6. [Related Projects](#related-projects)
+2. [Disclaimer & risk](#disclaimer--risk)
+3. [Getting started](#getting-started)
+4. [Hall of Fame 👑](#hall-of-fame-aka-credits)
+5. [Hall of Shame 🚨](#hall-of-shame-aka-scammers-leechers-etc)
+6. [Support](#support)
+7. [Related Projects](#related-projects)
 
 ## About this hard fork
 
-SLSsteam-Plus is a hard fork of the original
-[SLSsteam](https://github.com/AceSLS/SLSsteam) project. It keeps the Linux Steam
-client modification base while adding a Lua-driven configuration layer and
-manifest support for depot keys, access tokens, and manifest pinning. It stays a
-drop-in replacement for upstream — same `~/.config/SLSsteam` layout and library
-names — so only the released archives are named `SLSsteam-Plus-*` to tell them
-apart.
+SLSsteam-Plus is a hard fork of [SLSsteam](https://github.com/AceSLS/SLSsteam), originally created by [AceSLS](https://github.com/AceSLS). This fork adds Lua configuration, depot key injection, access tokens, and manifest pinning on top of the original Linux Steam client mod. It uses the same `~/.config/SLSsteam` layout and library names as upstream; only the release archives are named `SLSsteam-Plus-*`.
 
-The Lua and manifest workflows are inspired by
-[OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool), adapted for the
-Linux/SLSsteam environment rather than the Windows DLL model used upstream.
+**This fork is not affiliated with AceSLS or the original SLSsteam project.** All the foundational work is his. He has no involvement in SLSsteam-Plus, so please don't bring fork issues to him or his channels.
+
+The Lua and manifest parts are based on [OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool), ported to work with the Linux/SLSsteam hooking model instead of Windows DLLs.
+
+### Why this fork exists
+
+Upstream SLSsteam doesn't do depot keys or manifests, and that's intentional. AceSLS said so in [#112](https://github.com/AceSLS/SLSsteam/issues/112) ("Steamtools does it via decryptionkeys & manifests but I won't add either") and [#35](https://github.com/AceSLS/SLSsteam/issues/35) ("I don't think that would be wise. So most likely not in my repo anyway"). Fair enough, but I needed it for my setup, so this fork adds it.
+
+> [!IMPORTANT]
+> **Primarily a personal project.** I maintain it mainly for my wife's Steam Deck. 
+> Expect churn: APIs, config keys, and behaviour can change between versions, and support is best-effort.
+
+## Disclaimer & risk
+
+> [!CAUTION]
+> **Use at your own risk.** This talks to the live Steam client. I try to suppress or fake requests that would reach Valve, but I can't promise nothing identifying ever leaks, and a Steam update can break that at any time. No warranty. You accept the risk for your account, saves, and install. If account safety matters to you, don't use this.
 
 ## Getting started
 
@@ -59,13 +67,14 @@ OnetapBeta by Hammer Steam: Resells Steamless & SLSsteam. Intellectually went fa
 
 ## Support
 
-Please do not treat the issue tracker like a private support hotline!
-Feel free to join our [Discord](https://discord.gg/j3ZzjeV4eQ) instead.
+Bugs, questions, or anything about **this fork** (download, cloud-save, etc.) go in this repo's [Issues](../../issues) and [Discussions](../../discussions). That's where I track fork stuff.
+
+> [!NOTE]
+> The [Discord](https://discord.gg/j3ZzjeV4eQ) linked from upstream is AceSLS's, for the original SLSsteam. **Don't ask about SLSsteam-Plus there.** It's not their project to support. Keep upstream channels for upstream.
 
 ## Related Projects
 
-[OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool): Inspiration for
-the Lua configuration and manifest workflows in this hard fork.
+[OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool): Where the Lua config and manifest handling ideas came from.
 
 [h3adcr-b](https://github.com/Deadboy666/h3adcr-b): Universal SLSsteam installer & steamclient downgrader
 
