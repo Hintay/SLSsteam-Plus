@@ -9,6 +9,29 @@ namespace CloudSaves {
 
 static constexpr int32_t kEResultOK = 1;
 
+// Percent-encode a cloud filename for use in the loopback URL path. Steam relays
+// the url_path verbatim, and the HTTP server url-decodes it, so any character the
+// decoder would treat specially must be escaped here — most importantly the
+// literal '%' in Wine/Proton path tokens like "%WinAppDataLocalLow%". '/' is kept
+// literal so the path hierarchy maps onto staging sub-directories.
+static std::string urlEncode(const std::string& s) {
+    static const char* kHex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~' || c == '/') {
+            out += static_cast<char>(c);
+        } else {
+            out += '%';
+            out += kHex[c >> 4];
+            out += kHex[c & 0x0F];
+        }
+    }
+    return out;
+}
+
 RpcEngine::RpcEngine(SaveStore& store, uint16_t httpPort)
     : m_store(store), m_port(httpPort) {}
 
@@ -84,7 +107,7 @@ bool RpcEngine::handleBeginUpload(uint32_t appId, uint32_t accountId,
     auto* blk = resp.add_block_requests();
     blk->set_url_host("127.0.0.1:" + std::to_string(m_port));
     blk->set_url_path("/" + std::to_string(accountId) + "/" + std::to_string(appId) +
-                      "/" + req.filename());   // server url-decodes; leaf slashes ok
+                      "/" + urlEncode(req.filename()));   // server url-decodes
     blk->set_use_https(false);
     blk->set_http_method(4);  // PUT
     blk->set_block_offset(0);
@@ -116,7 +139,7 @@ bool RpcEngine::handleDownload(uint32_t appId, uint32_t accountId,
     resp.set_file_size(static_cast<uint32_t>(bytes.size()));
     resp.set_raw_file_size(static_cast<uint32_t>(bytes.size()));
     resp.set_url_host("127.0.0.1:" + std::to_string(m_port));
-    resp.set_url_path("/" + std::to_string(accountId) + "/" + std::to_string(appId) + "/" + req.filename());
+    resp.set_url_path("/" + std::to_string(accountId) + "/" + std::to_string(appId) + "/" + urlEncode(req.filename()));
     resp.set_use_https(false);
     respBytes = resp.SerializeAsString();
     eresult = kEResultOK;
