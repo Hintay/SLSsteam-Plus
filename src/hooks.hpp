@@ -74,6 +74,7 @@ namespace Hooks
 {
 	typedef void(*IClientAppManager_RunIPCFrame_t)(void*, void*, void*, void*);
 	typedef void(*IClientApps_RunIPCFrame_t)(void*, void*, void*, void*);
+	typedef void(*IClientCompat_RunIPCFrame_t)(void*, void*, void*, void*);
 	typedef void(*IClientRemoteStorage_RunIPCFrame_t)(void*, void*, void*, void*);
 	typedef void(*IClientUGC_RunIPCFrame_t)(void*, void*, void*, void*);
 	typedef void(*IClientUtils_RunIPCFrame_t)(void*, void*, void*, void*);
@@ -154,6 +155,7 @@ namespace Hooks
 
 	extern DetourHook<IClientAppManager_RunIPCFrame_t> IClientAppManager_RunIPCFrame;
 	extern DetourHook<IClientApps_RunIPCFrame_t> IClientApps_RunIPCFrame;
+	extern DetourHook<IClientCompat_RunIPCFrame_t> IClientCompat_RunIPCFrame;
 	extern DetourHook<IClientRemoteStorage_RunIPCFrame_t> IClientRemoteStorage_RunIPCFrame;
 	extern DetourHook<IClientUGC_RunIPCFrame_t> IClientUGC_RunIPCFrame;
 	extern DetourHook<IClientUtils_RunIPCFrame_t> IClientUtils_RunIPCFrame;

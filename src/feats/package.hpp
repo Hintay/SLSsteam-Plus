@@ -23,6 +23,12 @@ namespace Package {
     void setInjectedPackage(void* pkg);
     void setCUser(void* cuser);
 
+    // Read accessor for the cached CUser*. Captured from CUser hooks and, if
+    // needed, lazily resolved from CSteamEngine::getUser(0). Used by
+    // LibraryInject to reach the per-user CConfigStore at a pattern-resolved
+    // offset inside CUser.
+    void* getCUser();
+
     // onDepotsChanged callback target (lua FileWatcher thread). Only flags a
     // pending change; the real pkg0 mutation runs on a Steam thread.
     void notifyLicenseChanged();

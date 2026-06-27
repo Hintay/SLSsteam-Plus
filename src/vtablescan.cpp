@@ -13,6 +13,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <unordered_set>
 #include <utility>
@@ -23,9 +24,10 @@ namespace
 	// SLSsteam's IClient* VFThook surface. Keep in sync with the installVFT and
 	// VtableScan::slotOf call sites in src/ — any iface name passed to slotOf
 	// must appear here, or the lookup returns -1 and the hook isn't installed.
-	constexpr std::array<std::string_view, 4> kInterestingIfaces {{
+	constexpr std::array<std::string_view, 5> kInterestingIfaces {{
 		"IClientAppManager",
 		"IClientApps",
+		"IClientCompat",
 		"IClientRemoteStorage",
 		"IClientUtils",
 	}};
@@ -375,6 +377,28 @@ const VtableScan::Interface* VtableScan::find(std::string_view iface)
 	return &g_interfaces[it->second];
 }
 
+namespace
+{
+	// One warn per (iface, method) miss. A -1 from slotOf otherwise fails
+	// silently: the SDK wrapper returns nullptr and the caller treats it as a
+	// real-but-empty result. The dominant cause is forgetting to register an
+	// interface in kInterestingIfaces (above); a method-name drift across a
+	// Steam update is the other. Surfacing it once at first use turns an
+	// hour-long live-debug into a log line.
+	std::mutex                     g_slotWarnMu;
+	std::unordered_set<std::string> g_slotWarned;
+
+	void warnSlotMissingOnce(std::string_view iface, std::string_view method)
+	{
+		std::string key = std::string(iface) + "::" + std::string(method);
+		std::lock_guard<std::mutex> lk(g_slotWarnMu);
+		if (g_slotWarned.insert(key).second)
+			g_pLog->warn("VtableScan: no slot for %s::%s — interface not in "
+			             "kInterestingIfaces or method name drifted; caller gets -1\n",
+			             std::string(iface).c_str(), std::string(method).c_str());
+	}
+}
+
 int VtableScan::slotOf(std::string_view iface, std::string_view method)
 {
 	// Exact match only. Caller must pass Steam's internal name verbatim,
@@ -383,10 +407,17 @@ int VtableScan::slotOf(std::string_view iface, std::string_view method)
 	// (e.g. "GetAppID" with capital ID, not "GetAppId"). The audit tool
 	// at tools/whitelist_selfscan.py can verify name alignment offline.
 	const Interface* p = find(iface);
-	if (!p) return -1;
+	if (!p) {
+		// find() also returns null before warmup; only warn once warmed so a
+		// pre-warm slotOf call (returns -1 legitimately) is not flagged.
+		if (g_warmed.load(std::memory_order_acquire))
+			warnSlotMissingOnce(iface, method);
+		return -1;
+	}
 	for (const auto& m : p->methods)
 		if (m.name == method)
 			return static_cast<int>(m.slot);
+	warnSlotMissingOnce(iface, method);
 	return -1;
 }
 

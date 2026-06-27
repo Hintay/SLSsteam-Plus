@@ -24,6 +24,24 @@ public:
 		std::string title;
 	};
 
+	struct LibraryInjectEntry
+	{
+		std::string path;
+		std::string flag;
+		std::unordered_set<uint32_t> apps;
+	};
+
+	// One entry in [[FakeAppIds.Flags]]: trigger fake-AppId mapping at LaunchApp
+	// time when the launch options for the launched app contain `flag`. apps and
+	// excludeApps are both optional scopes; see selection logic in FakeAppIds.
+	struct FakeAppIdFlagRule
+	{
+		std::string flag;
+		uint32_t fakeAppId = 0;
+		std::unordered_set<uint32_t> apps;        // optional whitelist
+		std::unordered_set<uint32_t> excludeApps; // optional blacklist
+	};
+
 	class CDlcData
 	{
 	public:
@@ -41,6 +59,7 @@ public:
 	MTVariable<std::unordered_map<uint32_t, uint64_t>> appTokens;
 	MTVariable<std::unordered_set<uint32_t>> fakeOffline;
 	MTVariable<std::unordered_map<uint32_t, uint32_t>> fakeAppIds;
+	MTVariable<std::vector<FakeAppIdFlagRule>> fakeAppIdFlags;
 	MTVariable<FakeGame_t> idleStatus;
 	MTVariable<std::unordered_map<uint32_t, std::string>> gameTitles;
 	MTVariable<std::unordered_map<uint32_t, uint32_t>> subscriptionTimestamps;
@@ -90,6 +109,16 @@ public:
 	// Lua.Paths: optional list of extra directories to scan for .lua plugin files.
 	// These are scanned after the built-in steam-root and user-config dirs.
 	MTVariable<std::vector<std::string>> luaPaths;
+
+	// Holds the unified [LibraryInject] config. `libs` is a flat list of
+	// entries; each entry's Path extension picks the backend at LaunchApp
+	// time: ".dll" -> Proton helper flow, ".so" -> native Linux LD_PRELOAD.
+	struct LibraryInjectConfig
+	{
+		std::string dir;
+		std::vector<LibraryInjectEntry> libs;
+	};
+	MTVariable<LibraryInjectConfig> libraryInject;
 
 	//Using incomplete class to avoid runtime linking errors
 	CFileWatcher* watcher;

@@ -8,12 +8,14 @@
 #include "lua/ManifestProvider.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <regex>
 #include <string>
 #include <unordered_set>
@@ -94,6 +96,20 @@ static const NewConfigEntry kNewConfigEntries[] = {
 	  "# Disable cloud saves for unlocked games. Set to false if using CloudRedirect or similar.\n"
 	  "DisableCloud = true\n" },
 
+	// --- Advanced ---
+	{ "LibraryInject", "Advanced",
+	  "# Inject a pre-compiled library into game processes.\n"
+	  "# Path: absolute Linux path to a .dll (Proton games) or .so (native).\n"
+	  "# Apps: list of AppIds to inject into (optional if Flag is set).\n"
+	  "# Flag: a Steam launch option that triggers injection.\n"
+	  "#   The flag is stripped from argv before the game sees it.\n"
+	  "# .dll entries require sls_proton_inject.so (next to SLSsteam.so, or under /usr/lib).\n"
+	  "# Example:\n"
+	  "#   [LibraryInject]\n"
+	  "#   [[LibraryInject.Libs]]\n"
+	  "#   Path = \"/home/deck/.config/SLSsteam/OnlineFix.dll\"\n"
+	  "#   Flag = \"-onlinefix\"\n" },
+
 	// --- Internal ---
 	{ "OnlinePatterns", "Internal",
 	  "# Fetch the latest patterns online (HTTPS) on startup to pick up updated\n"
@@ -157,10 +173,21 @@ static bool configHasKey(const std::string& content, const char* key)
 		const size_t lineEnd = content.find('\n', pos);
 		const size_t len = (lineEnd == std::string::npos ? content.size() : lineEnd) - pos;
 		const std::string_view line(content.data() + pos, len);
+		std::string_view normalized = line;
+		while (!normalized.empty() && (normalized.front() == ' ' || normalized.front() == '\t'))
+			normalized.remove_prefix(1);
+		if (!normalized.empty() && normalized.front() == '#')
+		{
+			normalized.remove_prefix(1);
+			while (!normalized.empty() && (normalized.front() == ' ' || normalized.front() == '\t'))
+				normalized.remove_prefix(1);
+		}
 
 		if (line.starts_with(active) || line.starts_with(activeEq) ||
 		    line.starts_with(hash)   || line.starts_with(hashSp)   ||
-		    line.starts_with(section) || line.starts_with(hashSec) || line.starts_with(hashSpSec))
+		    line.starts_with(section) || line.starts_with(hashSec) || line.starts_with(hashSpSec) ||
+		    normalized.starts_with(active) || normalized.starts_with(activeEq) ||
+		    normalized.starts_with(section))
 			return true;
 
 		pos = (lineEnd == std::string::npos) ? content.size() : lineEnd + 1;
@@ -911,7 +938,95 @@ bool CConfig::loadSettings()
 	appIds = getList<uint32_t>(node, "AppIds");
 	fakeOffline = getList<uint32_t>(node, "FakeOffline");
 
-	fakeAppIds = getMap<uint32_t, uint32_t>(node, "FakeAppIds");
+	// [FakeAppIds] hosts both a flat real→fake int map AND an optional
+	// [[FakeAppIds.Flags]] array of tables. getMap<uint32_t,uint32_t> can't
+	// handle the latter (non-integer key "Flags" trips stoul). Parse the
+	// table by hand: integer keys → map, "Flags" array → rule vector,
+	// anything else → __parseError.
+	{
+		std::unordered_map<uint32_t, uint32_t> map;
+		std::vector<FakeAppIdFlagRule> rules;
+		if (auto* tbl = node["FakeAppIds"].as_table()) {
+			for (const auto& [k, v] : *tbl) {
+				const std::string key(k.str());
+				if (key == "Flags") {
+					auto* arr = v.as_array();
+					if (!arr) {
+						g_pLog->warn("FakeAppIds.Flags is not an array of tables — ignored\n");
+						__parseError = true;
+						continue;
+					}
+					for (const auto& item : *arr) {
+						auto* row = item.as_table();
+						if (!row) {
+							g_pLog->warn("FakeAppIds.Flags: entry is not a table — skipped\n");
+							__parseError = true;
+							continue;
+						}
+						FakeAppIdFlagRule rule;
+						rule.flag = (*row)["Flag"].value_or(std::string(""));
+						auto fakeOpt = (*row)["FakeAppId"].value<int64_t>();
+						if (rule.flag.empty() || !fakeOpt || *fakeOpt <= 0
+						 || *fakeOpt > std::numeric_limits<uint32_t>::max()) {
+							g_pLog->warn("FakeAppIds.Flags: entry missing/invalid Flag or FakeAppId — skipped\n");
+							__parseError = true;
+							continue;
+						}
+						rule.fakeAppId = static_cast<uint32_t>(*fakeOpt);
+						auto loadAppList = [&](const char* field, std::unordered_set<uint32_t>& dst) {
+							if (auto* a = (*row)[field].as_array()) {
+								for (const auto& e : *a) {
+									auto val = e.value<int64_t>();
+									if (!val || *val < 0
+									 || *val > std::numeric_limits<uint32_t>::max()) {
+										g_pLog->warn("FakeAppIds.Flags \"%s\": %s entry is not a valid uint32 — skipped\n",
+											rule.flag.c_str(), field);
+										__parseError = true;
+										continue;
+									}
+									dst.emplace(static_cast<uint32_t>(*val));
+								}
+							}
+						};
+						loadAppList("Apps", rule.apps);
+						loadAppList("ExcludeApps", rule.excludeApps);
+						g_pLog->info("FakeAppIds.Flags: \"%s\" -> %u (apps=%zu exclude=%zu)\n",
+							rule.flag.c_str(), rule.fakeAppId, rule.apps.size(), rule.excludeApps.size());
+						rules.push_back(std::move(rule));
+					}
+				} else {
+					// Use from_chars instead of stoul: with -O3 -flto an out_of_range
+					// thrown by stoul (e.g. on `9999999999` from a 32-bit build)
+					// escaped the surrounding catch and aborted Steam at init.
+					// from_chars never throws — fail paths come back through ec.
+					uint64_t parsed = 0;
+					const char* begin = key.data();
+					const char* end = key.data() + key.size();
+					auto [ptr, ec] = std::from_chars(begin, end, parsed);
+					if (ec != std::errc() || ptr != end
+					 || parsed > std::numeric_limits<uint32_t>::max()) {
+						g_pLog->warn("FakeAppIds: key \"%s\" is neither an AppId nor \"Flags\" — ignored\n", key.c_str());
+						__parseError = true;
+						continue;
+					}
+					const uint32_t intKey = static_cast<uint32_t>(parsed);
+					// Reject non-int values (e.g. `2070270 = "abc"`) instead of
+					// silently mapping to 0 — that silently breaks the user's
+					// intended mapping with no signal that anything is wrong.
+					auto valOpt = v.value<int64_t>();
+					if (!valOpt || *valOpt < 0
+					 || *valOpt > std::numeric_limits<uint32_t>::max()) {
+						g_pLog->warn("FakeAppIds[%u]: value is not a valid uint32 — ignored\n", intKey);
+						__parseError = true;
+						continue;
+					}
+					map[intKey] = static_cast<uint32_t>(*valOpt);
+				}
+			}
+		}
+		fakeAppIds = std::move(map);
+		fakeAppIdFlags = std::move(rules);
+	}
 	gameTitles = getMap<uint32_t, std::string>(node, "GameTitles");
 	subscriptionTimestamps = getMap<uint32_t, uint32_t>(node, "SubscriptionTimestamps");
 
@@ -1081,6 +1196,44 @@ bool CConfig::loadSettings()
 		{
 			g_pLog->info("Lua.Paths: %zu extra dir(s) configured\n", paths.size());
 		}
+	}
+
+	// [LibraryInject] — Dir (optional string) + [[LibraryInject.Libs]] array of tables.
+	{
+		LibraryInjectConfig cfg;
+		if (auto* pi = node["LibraryInject"].as_table()) {
+			cfg.dir = (*pi)["Dir"].value_or(std::string(""));
+			if (auto* arr = (*pi)["Libs"].as_array()) {
+				for (const auto& item : *arr) {
+					auto* tbl = item.as_table();
+					if (!tbl) continue;
+					LibraryInjectEntry entry;
+					entry.path = (*tbl)["Path"].value_or(std::string(""));
+					entry.flag = (*tbl)["Flag"].value_or(std::string(""));
+					if (auto* apps = (*tbl)["Apps"].as_array()) {
+						for (const auto& a : *apps) {
+							if (auto v = a.value<int64_t>()) {
+								if (*v >= 0 && *v <= std::numeric_limits<uint32_t>::max())
+									entry.apps.emplace(static_cast<uint32_t>(*v));
+								else
+									__parseError = true;
+							}
+							else { __parseError = true; }
+						}
+					}
+					if (!entry.path.empty() && (!entry.apps.empty() || !entry.flag.empty())) {
+						if (!entry.flag.empty())
+							g_pLog->info("LibraryInject: %s -> flag \"%s\" + %zu app(s)\n",
+								entry.path.c_str(), entry.flag.c_str(), entry.apps.size());
+						else
+							g_pLog->info("LibraryInject: %s -> %zu app(s)\n",
+								entry.path.c_str(), entry.apps.size());
+						cfg.libs.push_back(std::move(entry));
+					}
+				}
+			}
+		}
+		libraryInject = std::move(cfg);
 	}
 
 	if (__parseError)

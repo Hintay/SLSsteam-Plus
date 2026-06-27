@@ -75,6 +75,17 @@ LogLevel = 2
 # Use 0 as a key to set for all unowned Apps.
 # Example: { 440 = 730 }
 #[FakeAppIds]
+#
+# [[FakeAppIds.Flags]] entries gate a real -> fake mapping behind a Steam
+# launch option, evaluated at LaunchApp time. Useful for setups where the
+# mapping should only apply when a specific launch mode (e.g. -onlinefix) is
+# selected. Apps/ExcludeApps are optional scopes; omit both to match any app.
+# Example:
+#   [[FakeAppIds.Flags]]
+#   Flag = "-onlinefix"
+#   FakeAppId = 480
+#   Apps = [12345]
+#   #ExcludeApps = [99999]
 
 # Extra Data for DLCs belonging to a specific AppId. Only needed
 # when the App you're playing is hit by Steam's 64 DLC limit.
@@ -93,6 +104,36 @@ LogLevel = 2
 #   [DenuvoGames]
 #   76561198000000000 = [12345, 67890]
 #[DenuvoGames]
+
+# Inject a pre-compiled library into game processes.
+#   *.dll → Proton (Wine) games: a 64-bit helper LD_PRELOAD'd inside each
+#           Wine PE process detours ntdll!LdrLoadDll and loads the DLL the
+#           first time the host loads steam_api64.dll / steamclient.dll
+#           (i.e. the game process that just called SteamAPI_Init).
+#   *.so  → Native Linux games: appended to LD_PRELOAD when SLSsteam
+#           launches the game. Loaded into the game process by glibc.
+# Path: absolute Linux path to a .dll or .so.
+# Apps: list of AppIds to inject into (optional if Flag is set).
+# Flag: a Steam launch option (e.g. "-onlinefix") that triggers injection.
+#   Any game launched with this flag will inject the library; the flag is
+#   stripped from argv before the game sees it. Apps and Flag can coexist.
+# Same AppId may appear in both a .dll and a .so entry; per-launch the
+# matching one fires based on the selected compat tool (Proton vs native).
+# .dll entries require sls_proton_inject.so. Searched next to SLSsteam.so,
+# then under /usr/lib and /usr/lib64; set Dir to override the search path.
+# Examples:
+#   [LibraryInject]
+#   #Dir = "/custom/path"
+#
+#   # Flag: inject into any game launched with -onlinefix in its launch options
+#   [[LibraryInject.Libs]]
+#   Path = "/home/deck/.config/SLSsteam/OnlineFix.dll"
+#   Flag = "-onlinefix"
+#
+#   # Apps: inject into specific AppIds only
+#   [[LibraryInject.Libs]]
+#   Path = "/path/to/other.dll"
+#   Apps = [12345, 67890]
 
 # --- Internal (default values are optimal for most users) ---
 

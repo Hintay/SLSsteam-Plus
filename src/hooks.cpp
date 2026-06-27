@@ -20,6 +20,7 @@
 #include "sdk/EResult.hpp"
 #include "sdk/IClientAppManager.hpp"
 #include "sdk/IClientApps.hpp"
+#include "sdk/IClientCompat.hpp"
 #include "sdk/IClientUtils.hpp"
 
 #include "feats/achievements.hpp"
@@ -30,6 +31,7 @@
 #include "feats/misc.hpp"
 #include "feats/fakeappid.hpp"
 #include "feats/package.hpp"
+#include "feats/library_inject.hpp"
 #include "feats/steamui.hpp"
 #include "feats/requestcode.hpp"
 #include "feats/ticket.hpp"
@@ -726,7 +728,9 @@ static void* hkClientAppManager_LaunchApp(void* pClientAppManager, uint32_t* pAp
 		);
 
 		FakeAppIds::launchApp(*pAppId);
+		FakeAppIds::onLaunchApp(*pAppId);
 		Ticket::launchApp(*pAppId);
+		LibraryInject::onLaunchApp(*pAppId);
 	}
 
 	//Do not do anything in post! Otherwise App launching will break
@@ -899,6 +903,14 @@ static bool hkClientApps_BGetDLCDataByIndex(void* pClientApps, uint32_t appId, i
 	);
 
 	return ret;
+}
+
+__attribute__((hot))
+static void hkClientCompat_RunIPCFrame(void* pClientCompat, void* a1, void* a2, void* a3)
+{
+	// Capture the IClientCompat* for outbound queries (see IClientCompat.cpp).
+	g_pClientCompat = reinterpret_cast<IClientCompat*>(pClientCompat);
+	Hooks::IClientCompat_RunIPCFrame.tramp.fn(pClientCompat, a1, a2, a3);
 }
 
 __attribute__((hot))
@@ -1175,6 +1187,7 @@ static bool hkClientRemoteStorage_IsCloudEnabledForApp(void* pClientRemoteStorag
 
 static bool g_bUpdateAppDownloadPlanReady = false;
 static bool g_bConfigStoreWriteVdfFileReady = false;
+static bool g_bClientCompatReady = false;
 
 static void hkClientRemoteStorage_RunIPCFrame(void* pClientRemoteStorage, void* a1, void* a2, void* a3)
 {
@@ -1618,6 +1631,7 @@ namespace Hooks
 {
 	DetourHook<IClientAppManager_RunIPCFrame_t> IClientAppManager_RunIPCFrame;
 	DetourHook<IClientApps_RunIPCFrame_t> IClientApps_RunIPCFrame;
+	DetourHook<IClientCompat_RunIPCFrame_t> IClientCompat_RunIPCFrame;
 	DetourHook<IClientRemoteStorage_RunIPCFrame_t> IClientRemoteStorage_RunIPCFrame;
 	DetourHook<IClientUGC_RunIPCFrame_t> IClientUGC_RunIPCFrame;
 	DetourHook<IClientUtils_RunIPCFrame_t> IClientUtils_RunIPCFrame;
@@ -1767,6 +1781,16 @@ bool Hooks::setup()
 		g_bUpdateAppDownloadPlanReady
 	);
 
+	// IClientCompat::RunIPCFrame's sole purpose is to capture g_pClientCompat
+	// for LibraryInject's Proton-vs-native routing. Skip the hook entirely when
+	// no [[LibraryInject.Libs]] entries are configured — leaves users unaffected
+	// by future steamclient drift in this one pattern.
+	if (LibraryInject::isEnabled())
+	{
+		g_bClientCompatReady = IClientCompat_RunIPCFrame.setup(Patterns::IClientCompat::RunIPCFrame, hkClientCompat_RunIPCFrame);
+		g_pLog->debug("IClientCompat::RunIPCFrame hook: ready=%i\n", g_bClientCompatReady);
+	}
+
 	LuaLoader::setOnDepotsChanged(&Package::notifyLicenseChanged);
 
 	if (!succeeded)
@@ -1829,6 +1853,10 @@ void Hooks::place()
 
 	IClientApps_RunIPCFrame.place();
 	IClientAppManager_RunIPCFrame.place();
+	if (g_bClientCompatReady)
+	{
+		IClientCompat_RunIPCFrame.place();
+	}
 	IClientRemoteStorage_RunIPCFrame.place();
 	IClientUGC_RunIPCFrame.place();
 	IClientUtils_RunIPCFrame.place();
@@ -1885,6 +1913,10 @@ void Hooks::remove()
 
 	IClientApps_RunIPCFrame.remove();
 	IClientAppManager_RunIPCFrame.remove();
+	if (g_bClientCompatReady)
+	{
+		IClientCompat_RunIPCFrame.remove();
+	}
 	IClientRemoteStorage_RunIPCFrame.remove();
 	IClientUGC_RunIPCFrame.remove();
 	IClientUtils_RunIPCFrame.remove();

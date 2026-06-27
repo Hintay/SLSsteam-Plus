@@ -28,6 +28,7 @@ options=(!strip !debug)
 
 source=('SLSsteam.so'
         'library-inject.so'
+        'sls_proton_inject.so'
         'ticket-grabber'
         'SLSsteam.desktop'
         'SLSsteam-native.desktop'
@@ -37,11 +38,13 @@ sha256sums=('SKIP'
             'SKIP'
             'SKIP'
             'SKIP'
+            'SKIP'
             'SKIP')
 
 package() {
 	install -Dm644 "$srcdir/SLSsteam.so"             "$pkgdir/usr/lib32/libSLSsteam.so"
 	install -Dm644 "$srcdir/library-inject.so"       "$pkgdir/usr/lib32/libSLS-library-inject.so"
+	install -Dm644 "$srcdir/sls_proton_inject.so"    "$pkgdir/usr/lib/sls_proton_inject.so"
 	install -Dm644 "$srcdir/SLSsteam.desktop"        "$pkgdir/usr/share/applications/SLSsteam.desktop"
 	install -Dm644 "$srcdir/SLSsteam-native.desktop" "$pkgdir/usr/share/applications/SLSsteam-native.desktop"
 	install -Dm644 "$srcdir/logo.png"                "$pkgdir/usr/share/pixmaps/SLSsteam.png"

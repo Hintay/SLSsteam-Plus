@@ -200,6 +200,38 @@
   # name (vs the old liblua5.4.a) does not matter.
   luaLib = i686.lua5_4;
 
+  # 64-bit Proton DLL injection helper. Freestanding C++17 (no STL, no
+  # exceptions, no RTTI) so the clone()-spawned poll thread stays safe.
+  # Also depends on src/feats/protoninject_protocol.h for the IPC protocol,
+  # so the source fileset includes both directories.
+  protonInject = pkgs.stdenv.mkDerivation {
+    pname = "sls-proton-inject";
+    version = rev;
+    src = lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [
+        ../tools/proton_inject
+        ../src/feats/protoninject_protocol.h
+      ];
+    };
+    dontConfigure = true;
+    buildPhase = ''
+      g++ -shared -fPIC -O2 -Wall -Wextra -Wpedantic \
+        -std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics \
+        -o sls_proton_inject.so \
+        tools/proton_inject/inject.cpp \
+        tools/proton_inject/loader.cpp \
+        tools/proton_inject/ipc.cpp \
+        tools/proton_inject/detour.cpp \
+        tools/proton_inject/pe.cpp \
+        tools/proton_inject/maps.cpp \
+        tools/proton_inject/log.cpp
+    '';
+    installPhase = ''
+      install -Dm755 sls_proton_inject.so $out/lib/sls_proton_inject.so
+    '';
+  };
+
   # ticket-grabber: the .NET companion CLI, built as its own derivation and
   # installed into $out below (see nix-modules/ticket-grabber.nix + deps.json).
   ticketGrabber = import ./ticket-grabber.nix {
@@ -268,6 +300,7 @@ in
       mkdir -p $out/
       cp bin/SLSsteam.so $out/
       cp bin/library-inject.so $out/
+      cp ${protonInject}/lib/sls_proton_inject.so $out/
       cp ${ticketGrabber}/bin/ticket-grabber $out/ticket-grabber
 
       # Set rpath for the dynamically-linked runtime deps (curl + openssl). All
