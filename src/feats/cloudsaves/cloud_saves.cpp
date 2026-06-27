@@ -144,6 +144,8 @@ void shutdown() {
 
 void setAccountId(uint32_t accountId) { g_accountId.store(accountId, std::memory_order_release); }
 
+uint32_t accountId() { return g_accountId.load(std::memory_order_acquire); }
+
 bool handlesApp(uint32_t appId) {
     // Redirect only apps whose ownership we actually fake — mirrors OST feeding
     // CloudRedirect just the unlocked set. A genuinely-owned app (even if listed

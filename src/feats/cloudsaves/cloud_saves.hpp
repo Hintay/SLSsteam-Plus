@@ -12,6 +12,9 @@ void shutdown();
 // Set the current account id (low 32 bits of the SteamID). 0 = unresolved.
 void setAccountId(uint32_t accountId);
 
+// Get the resolved account id. Returns 0 if unresolved.
+uint32_t accountId();
+
 // True iff CloudSaves should handle this app (Mode==redirect && controlled).
 bool handlesApp(uint32_t appId);
 
