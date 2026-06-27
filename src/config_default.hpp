@@ -27,9 +27,6 @@ AppIds = []
 # OwnerIds for apps you got shared! Best to use this only on games NOT in your library.
 AdditionalApps = []
 
-# Disable cloud saves for unlocked games. Set to false if using CloudRedirect or similar.
-DisableCloud = true
-
 # Toggles notifications via notify-send
 Notifications = true
 
@@ -127,4 +124,15 @@ LogLevel = 2
 # Additional Lua plugin directories scanned after the built-in Steam and user config dirs.
 #[Lua]
 #Paths = []
+
+# How to handle Steam Cloud for unlocked games:
+#   "disable"  — turn Steam Cloud off for them: no sync, hides the
+#                "Cloud out of date" badge. (was DisableCloud = true)
+#   "redirect" — keep cloud on and redirect saves to a local folder you
+#                sync yourself (Syncthing, rclone, ...).
+#   "off"      — leave Steam Cloud untouched. (was DisableCloud = false)
+#[CloudSaves]
+#Mode = "disable"
+# Storage root for Mode = "redirect". Default: ~/.local/share/SLSsteam/cloudsaves
+#StorePath = ""
 )";

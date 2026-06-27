@@ -34,6 +34,7 @@
 #include "feats/requestcode.hpp"
 #include "feats/ticket.hpp"
 #include "feats/forge_ticket.hpp"
+#include "feats/cloudsaves/cloud_saves.hpp"
 
 #include "ownership.hpp"
 
@@ -450,6 +451,14 @@ static bool hkCWebSocketConnection_BBuildAndAsyncSendFrame(void* pThis, int opco
 				return true;
 			return Hooks::CWebSocketConnection_BBuildAndAsyncSendFrame.tramp.fn(pThis, opcode, const_cast<uint8_t*>(newData), newSize);
 		}
+
+		// Steam Cloud save redirection: recognise Cloud.* RPCs, fabricate the
+		// response locally, drop the outbound frame. catch(...) guards the C trampoline.
+		bool csDrop = false;
+		try { csDrop = CloudSaves::onSendFrame(pubData, cubData); }
+		catch (...) { csDrop = false; }
+		if (csDrop)
+			return true;
 	}
 	return Hooks::CWebSocketConnection_BBuildAndAsyncSendFrame.tramp.fn(pThis, opcode, pubData, cubData);
 }
@@ -490,6 +499,27 @@ static void* hkCCMConnection_RecvPkt(void* pThis, CNetPacket* pPacket)
 			uint32_t origSize = pPacket->m_cubData;
 			pPacket->m_pubData = const_cast<uint8_t*>(injData);
 			pPacket->m_cubData = injSize;
+			Hooks::CCMConnection_RecvPkt.tramp.fn(pThis, pPacket);
+			pPacket->m_pubData = origData;
+			pPacket->m_cubData = origSize;
+		}
+
+		// Deliver any queued Cloud.* responses by borrowing this packet as carrier.
+		// CloudSaves may have several queued responses, so drain until empty. Each
+		// nextInjection call is catch(...)-guarded against the C trampoline.
+		for (;;)
+		{
+			const uint8_t* csData = nullptr;
+			uint32_t csSize = 0;
+			bool csInject = false;
+			try { csInject = CloudSaves::nextInjection(csData, csSize); }
+			catch (...) { csInject = false; }
+			if (!csInject)
+				break;
+			uint8_t* origData = pPacket->m_pubData;
+			uint32_t origSize = pPacket->m_cubData;
+			pPacket->m_pubData = const_cast<uint8_t*>(csData);
+			pPacket->m_cubData = csSize;
 			Hooks::CCMConnection_RecvPkt.tramp.fn(pThis, pPacket);
 			pPacket->m_pubData = origData;
 			pPacket->m_cubData = origSize;
@@ -1424,6 +1454,11 @@ static uint32_t hkClientUser_GetSteamId(uint32_t steamId)
 			steamId = spoof;
 		}
 	}
+
+	// Feed the resolved account id (low 32 bits of the SteamID) to CloudSaves so
+	// it can scope the save store per account. catch(...) guards this trampoline.
+	try { CloudSaves::setAccountId(steamId & 0xFFFFFFFFu); }
+	catch (...) {}
 
 	return steamId;
 }

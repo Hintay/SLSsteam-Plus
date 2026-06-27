@@ -5,6 +5,7 @@
 #include "hooks.hpp"
 #include "log.hpp"
 #include "lua/LuaLoader.hpp"
+#include "feats/cloudsaves/cloud_saves.hpp"
 #include "onlinepatterns.hpp"
 #include "patterns.hpp"
 #include "utils.hpp"
@@ -67,6 +68,7 @@ static bool cleanEnvVar(const char* varName, const char* endsWith)
 //__attribute__((noreturn))
 static void unload()
 {
+	CloudSaves::shutdown();
 	SLSAPI::shutdown();
 	g_config.shutdown();
 	Hooks::remove();
@@ -203,6 +205,8 @@ static void load()
 	}
 
 	SLSAPI::init();
+
+	CloudSaves::init();
 
 	if (g_config.notifyInit.get())
 	{

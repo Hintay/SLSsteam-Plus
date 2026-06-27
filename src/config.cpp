@@ -89,12 +89,22 @@ struct NewConfigEntry {
 };
 
 static const NewConfigEntry kNewConfigEntries[] = {
-	// --- Core ---
-	{ "DisableCloud", "Core",
-	  "# Disable cloud saves for unlocked games. Set to false if using CloudRedirect or similar.\n"
-	  "DisableCloud = true\n" },
-
 	// --- Internal ---
+	// [CloudSaves] is a TOML table, so it lives in the Internal category alongside
+	// the other [table] sections ([Manifest]/[Lua]) — a table header must never be
+	// inserted among the Core flat keys (subsequent flat keys would parse into it).
+	{ "CloudSaves", "Internal",
+	  "# How to handle Steam Cloud for unlocked games:\n"
+	  "#   \"disable\"  — turn Steam Cloud off for them: no sync, hides the\n"
+	  "#                \"Cloud out of date\" badge. (was DisableCloud = true)\n"
+	  "#   \"redirect\" — keep cloud on and redirect saves to a local folder you\n"
+	  "#                sync yourself (Syncthing, rclone, ...).\n"
+	  "#   \"off\"      — leave Steam Cloud untouched. (was DisableCloud = false)\n"
+	  "#[CloudSaves]\n"
+	  "#Mode = \"disable\"\n"
+	  "# Storage root for Mode = \"redirect\". Default: ~/.local/share/SLSsteam/cloudsaves\n"
+	  "#StorePath = \"\"\n" },
+
 	{ "OnlinePatterns", "Internal",
 	  "# Fetch the latest patterns online (HTTPS) on startup to pick up updated\n"
 	  "# signatures and IPC method hashes for new Steam builds without re-downloading SLSsteam.\n"
@@ -884,7 +894,31 @@ bool CConfig::loadSettings()
 	api = getSetting<bool>(node, "API", true);
 	fakeEmail = getSetting<std::string>(node, "FakeEmail", "");
 	fakeWalletBalance = getSetting<int32_t>(node, "FakeWalletBalance", 0);
-	disableCloud = getSetting<bool>(node, "DisableCloud", true);
+	// [CloudSaves].Mode — unified cloud strategy (replaces flat DisableCloud).
+	{
+		CloudMode mode = CloudMode::Disable;  // default
+		std::string modeStr;
+		if (auto* cs = node["CloudSaves"].as_table())
+		{
+			modeStr = getSetting<std::string>(*cs, "Mode", "");
+			cloudStorePath = getSetting<std::string>(*cs, "StorePath", "");
+		}
+		if (!modeStr.empty())
+		{
+			if (modeStr == "redirect") mode = CloudMode::Redirect;
+			else if (modeStr == "off") mode = CloudMode::Off;
+			else mode = CloudMode::Disable;
+		}
+		else if (auto legacy = node["DisableCloud"].value<bool>())
+		{
+			// Backward-compat: map old flat DisableCloud.
+			mode = *legacy ? CloudMode::Disable : CloudMode::Off;
+			g_pLog->warn("Config: 'DisableCloud' is deprecated; use [CloudSaves].Mode "
+			             "(\"disable\"/\"redirect\"/\"off\"). Mapped %s -> %s.\n",
+			             *legacy ? "true" : "false", *legacy ? "disable" : "off");
+		}
+		cloudMode = mode;
+	}
 	blockTicketRequests = getSetting<bool>(node, "BlockTicketRequests", true);
 	offlineAchievementsSchema = getSetting<bool>(node, "OfflineAchievementsSchema", false);
 	extendedLogging = getSetting<bool>(node, "ExtendedLogging", false);
@@ -902,7 +936,9 @@ bool CConfig::loadSettings()
 	g_pLog->info("API: %i\n", api.get());
 	g_pLog->info("FakeEmail: %s\n", fakeEmail.get().c_str());
 	g_pLog->info("FakeWalletBalance: %i\n", fakeWalletBalance.get());
-	g_pLog->info("DisableCloud: %i\n", disableCloud.get());
+	const char* modeName = cloudMode.get() == CloudMode::Redirect ? "redirect"
+	                     : cloudMode.get() == CloudMode::Off ? "off" : "disable";
+	g_pLog->info("CloudSaves.Mode: %s\n", modeName);
 	g_pLog->info("BlockTicketRequests: %i\n", blockTicketRequests.get());
 	g_pLog->info("OfflineAchievementsSchema: %i\n", offlineAchievementsSchema.get());
 	g_pLog->info("ExtendedLogging: %i\n", extendedLogging.get());

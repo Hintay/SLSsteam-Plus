@@ -196,10 +196,10 @@ void Apps::getSubscribedApps(uint32_t* appList, size_t size, uint32_t& count)
 
 bool Apps::shouldDisableCloud(uint32_t appId)
 {
-	if (!g_config.disableCloud.get())
-	{
+	// CloudSaves redirect mode keeps cloud ON (we intercept the RPCs); only the
+	// "disable" mode turns cloud off for unlocked apps.
+	if (g_config.cloudMode.get() != CloudMode::Disable)
 		return false;
-	}
 
 	// Disable cloud for fake-owned/non-owned apps. CUser::isSubscribed can see
 	// package-injected ownership, so route through the genuine-owned cache.

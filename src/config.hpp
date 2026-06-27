@@ -16,6 +16,12 @@
 
 class CFileWatcher;
 
+// Unified Steam Cloud strategy for unlocked games (replaces flat DisableCloud).
+//   Disable  — turn Steam Cloud off for unlocked apps (no sync, hides badge).
+//   Redirect — keep cloud on but redirect saves to a local store we manage.
+//   Off      — leave Steam Cloud untouched.
+enum class CloudMode { Disable, Redirect, Off };
+
 class CConfig {
 public:
 	struct FakeGame_t
@@ -65,7 +71,8 @@ public:
 	MTVariable<bool> notifications;
 	MTVariable<bool> notifyInit;
 	MTVariable<bool> api;
-	MTVariable<bool> disableCloud;
+	MTVariable<CloudMode>    cloudMode;
+	MTVariable<std::string>  cloudStorePath;
 	MTVariable<bool> blockTicketRequests;
 	MTVariable<bool> offlineAchievementsSchema;
 	MTVariable<std::string> fakeEmail;
