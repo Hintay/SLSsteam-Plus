@@ -2,6 +2,7 @@
 #include "rpc_engine.hpp"
 #include "save_store.hpp"
 #include "http_transfer.hpp"
+#include "appinfo_kv.hpp"
 
 #include "../../config.hpp"
 #include "../../ownership.hpp"
@@ -40,17 +41,76 @@ std::string defaultStoreRoot() {
     return base + "/.local/share/SLSsteam/cloudsaves";
 }
 
-// Read official ufs.quota from appinfo. Returns 0 if unavailable.
+// Fetch one appinfo section into `out` for the given serialization form.
+// Returns the byte count (>0), or 0 on failure. Grows the buffer if the section
+// did not fit in the initial stack buffer.
+int32_t fetchAppDataSection(uint32_t appId, EAppInfoSection section,
+                            bool bSharedKVSymbols, std::vector<char>& out) {
+    char stackBuf[8192];
+    int32_t n = g_pClientApps->getAppDataSection(
+        appId, section, stackBuf, sizeof(stackBuf), bSharedKVSymbols);
+    if (n <= 0) return 0;
+    if (static_cast<uint32_t>(n) <= sizeof(stackBuf)) {
+        out.assign(stackBuf, stackBuf + n);
+        return n;
+    }
+    out.resize(static_cast<size_t>(n));
+    int32_t n2 = g_pClientApps->getAppDataSection(
+        appId, section, out.data(), static_cast<uint32_t>(out.size()), bSharedKVSymbols);
+    if (n2 <= 0) return 0;
+    out.resize(static_cast<size_t>(n2));
+    return n2;
+}
+
+// Hex preview of the first bytes, for format diagnosis in the debug log.
+std::string hexHead(const std::vector<char>& b, size_t maxBytes = 24) {
+    static const char* hx = "0123456789abcdef";
+    std::string s;
+    size_t lim = b.size() < maxBytes ? b.size() : maxBytes;
+    for (size_t i = 0; i < lim; ++i) {
+        uint8_t c = static_cast<uint8_t>(b[i]);
+        s.push_back(hx[c >> 4]); s.push_back(hx[c & 0xF]); s.push_back(' ');
+    }
+    return s;
+}
+
+// Read the developer's real ufs.quota / maxnumfiles from appinfo. Returns the
+// quota in bytes (with outMaxFiles set), or 0 if unavailable — in which case the
+// RpcEngine falls back to its default quota. Fail-closed by design: any read or
+// parse failure simply yields 0, never a wrong non-zero value.
+//
+// We do not yet know which bSharedKVSymbols value Steam maps to the parseable
+// inline-string form (the pooled-symbol form is not parseable out of process),
+// so for now we try BOTH and use whichever parses. Each attempt logs its flag,
+// byte count, parse result, and a byte preview, so the on-device debug log shows
+// which branch wins. TODO: once confirmed on-device, delete the losing branch
+// and keep the single correct getAppDataSection() call.
 uint64_t readUfsQuota(uint32_t appId, uint32_t& outMaxFiles) {
     outMaxFiles = 0;
     if (!g_pClientApps) return 0;
-    char buf[8192];
-    int32_t n = g_pClientApps->getAppDataSection(appId, APPINFOSECTION_UFS, buf, sizeof(buf));
-    if (n <= 0) return 0;
-    // appinfo UFS is a binary KV blob; scan for "quota"/"maxnumfiles" values.
-    // Conservative: if parsing is uncertain, return 0 (RpcEngine falls back).
-    // (Binary-KV parse implemented in Task 5.x if needed; v1 may return 0 and use
-    //  the 1 GiB default — documented limitation.)
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const bool shared = (attempt == 1);   // try false first, then true
+        std::vector<char> buf;
+        int32_t n = fetchAppDataSection(appId, APPINFOSECTION_UFS, shared, buf);
+        if (n <= 0) {
+            g_pLog->debug("CloudSaves: UFS fetch app=%u shared=%d -> n=%d (skip)\n",
+                          appId, shared ? 1 : 0, n);
+            continue;
+        }
+        uint64_t quota = 0; uint32_t maxFiles = 0;
+        bool ok = ParseUfsQuota(reinterpret_cast<const uint8_t*>(buf.data()),
+                                static_cast<size_t>(n), quota, maxFiles);
+        g_pLog->debug("CloudSaves: UFS attempt app=%u shared=%d n=%d parse=%d "
+                      "quota=%llu maxfiles=%u head=[%s]\n",
+                      appId, shared ? 1 : 0, n, ok ? 1 : 0,
+                      static_cast<unsigned long long>(quota), maxFiles,
+                      hexHead(buf).c_str());
+        if (ok) {
+            outMaxFiles = maxFiles;
+            return quota;
+        }
+    }
     return 0;
 }
 }  // namespace

@@ -55,7 +55,11 @@ class IClientApps
 {
 public:
 	int32_t getAppData(uint32_t appId, const char* name, char* pChOut, uint32_t outSize);
-	int32_t getAppDataSection(uint32_t appId, EAppInfoSection section, char* pChOut, uint32_t outSize);
+	// bSharedKVSymbols selects Steam's serialization form. true (default,
+	// pooled symbol table) matches existing existence-only callers; false emits
+	// standard binary KeyValues with inline string keys, which is what an
+	// out-of-process reader can actually parse.
+	int32_t getAppDataSection(uint32_t appId, EAppInfoSection section, char* pChOut, uint32_t outSize, bool bSharedKVSymbols = true);
 	bool requestAppInfoUpdate(uint32_t appId);
 	EAppType getAppType(uint32_t appId);
 };

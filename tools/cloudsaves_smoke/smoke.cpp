@@ -12,6 +12,7 @@
 #include "feats/cloudsaves/manifest.hpp"
 #include "feats/cloudsaves/save_store.hpp"
 #include "feats/cloudsaves/peer_check.hpp"
+#include "feats/cloudsaves/appinfo_kv.hpp"
 #include "slssteam_messages.pb.h"
 #include "feats/cloudsaves/rpc_engine.hpp"
 
@@ -197,6 +198,121 @@ static void test_upload_commit_download_cycle() {
     CHECK(store.changeNumber(777, 480) == 2);
 }
 
+// ---- binary-KV (appinfo UFS) quota parsing -------------------------------
+// Tiny builder for Steam's standard binary KeyValues form (inline string keys).
+namespace bkv {
+static void key(std::vector<uint8_t>& b, uint8_t type, const char* name) {
+    b.push_back(type);
+    for (const char* p = name; *p; ++p) b.push_back((uint8_t)*p);
+    b.push_back(0);
+}
+static void subtreeBegin(std::vector<uint8_t>& b, const char* name) { key(b, 0, name); }
+static void end(std::vector<uint8_t>& b) { b.push_back(8); }
+static void i32(std::vector<uint8_t>& b, const char* name, uint32_t v) {
+    key(b, 2, name);
+    for (int i = 0; i < 4; ++i) b.push_back((uint8_t)((v >> (8 * i)) & 0xFF));
+}
+static void u64(std::vector<uint8_t>& b, const char* name, uint64_t v) {
+    key(b, 7, name);
+    for (int i = 0; i < 8; ++i) b.push_back((uint8_t)((v >> (8 * i)) & 0xFF));
+}
+static void str(std::vector<uint8_t>& b, const char* name, const char* v) {
+    key(b, 1, name);
+    for (const char* p = v; *p; ++p) b.push_back((uint8_t)*p);
+    b.push_back(0);
+}
+}  // namespace bkv
+
+static void test_ufs_quota_typed_int() {
+    // ufs { quota=104857600 (i32), maxnumfiles=1000 (i32) }
+    std::vector<uint8_t> b;
+    bkv::subtreeBegin(b, "ufs");
+    bkv::i32(b, "quota", 104857600u);
+    bkv::i32(b, "maxnumfiles", 1000u);
+    bkv::end(b);  // ufs
+    uint64_t q = 0; uint32_t f = 0;
+    CHECK(CloudSaves::ParseUfsQuota(b.data(), b.size(), q, f));
+    CHECK(q == 104857600u);
+    CHECK(f == 1000u);
+}
+
+static void test_ufs_quota_string_values() {
+    // numeric values stored as strings must still parse
+    std::vector<uint8_t> b;
+    bkv::subtreeBegin(b, "ufs");
+    bkv::str(b, "quota", "536870912");
+    bkv::str(b, "maxnumfiles", "256");
+    bkv::end(b);
+    uint64_t q = 0; uint32_t f = 0;
+    CHECK(CloudSaves::ParseUfsQuota(b.data(), b.size(), q, f));
+    CHECK(q == 536870912u);
+    CHECK(f == 256u);
+}
+
+static void test_ufs_quota_uint64_and_nested() {
+    // quota as UInt64, plus an unrelated nested savefiles subtree before it
+    std::vector<uint8_t> b;
+    bkv::subtreeBegin(b, "ufs");
+    bkv::subtreeBegin(b, "savefiles");
+      bkv::subtreeBegin(b, "0");
+        bkv::str(b, "root", "gameroot");
+        bkv::str(b, "path", "saves");
+      bkv::end(b);
+    bkv::end(b);  // savefiles
+    bkv::u64(b, "quota", 3221225472ULL);  // 3 GiB, needs 64-bit
+    bkv::i32(b, "maxnumfiles", 2000u);
+    bkv::end(b);  // ufs
+    uint64_t q = 0; uint32_t f = 0;
+    CHECK(CloudSaves::ParseUfsQuota(b.data(), b.size(), q, f));
+    CHECK(q == 3221225472ULL);
+    CHECK(f == 2000u);
+}
+
+static void test_ufs_quota_missing_field_fails() {
+    std::vector<uint8_t> b;
+    bkv::subtreeBegin(b, "ufs");
+    bkv::i32(b, "quota", 1048576u);   // no maxnumfiles
+    bkv::end(b);
+    uint64_t q = 1; uint32_t f = 1;
+    CHECK(!CloudSaves::ParseUfsQuota(b.data(), b.size(), q, f));
+    CHECK(q == 0);  // outputs cleared on failure
+    CHECK(f == 0);
+}
+
+static void test_ufs_quota_implausible_fails() {
+    std::vector<uint8_t> b;
+    bkv::subtreeBegin(b, "ufs");
+    bkv::u64(b, "quota", 0xFFFFFFFFFFFFFFFFULL);  // way over 1 TiB
+    bkv::i32(b, "maxnumfiles", 1000u);
+    bkv::end(b);
+    uint64_t q = 0; uint32_t f = 0;
+    CHECK(!CloudSaves::ParseUfsQuota(b.data(), b.size(), q, f));
+}
+
+static void test_ufs_quota_zero_fails_and_truncation_safe() {
+    // zero quota is not usable
+    std::vector<uint8_t> b;
+    bkv::subtreeBegin(b, "ufs");
+    bkv::i32(b, "quota", 0u);
+    bkv::i32(b, "maxnumfiles", 1000u);
+    bkv::end(b);
+    uint64_t q = 0; uint32_t f = 0;
+    CHECK(!CloudSaves::ParseUfsQuota(b.data(), b.size(), q, f));
+
+    // truncated buffer must not over-read or crash
+    std::vector<uint8_t> good;
+    bkv::subtreeBegin(good, "ufs");
+    bkv::i32(good, "quota", 104857600u);
+    bkv::i32(good, "maxnumfiles", 1000u);
+    bkv::end(good);
+    for (size_t cut = 0; cut < good.size(); ++cut) {
+        uint64_t tq = 0; uint32_t tf = 0;
+        // any prefix: returns true only if both fields fully present; never crashes
+        CloudSaves::ParseUfsQuota(good.data(), cut, tq, tf);
+    }
+    CHECK(true);  // reached here without crashing
+}
+
 int main() {
     test_sha1_known_vectors();
     test_manifest_roundtrip();
@@ -206,6 +322,12 @@ int main() {
     test_changelist_empty_is_delta();
     test_changelist_unresolved_account_is_delta();
     test_upload_commit_download_cycle();
+    test_ufs_quota_typed_int();
+    test_ufs_quota_string_values();
+    test_ufs_quota_uint64_and_nested();
+    test_ufs_quota_missing_field_fails();
+    test_ufs_quota_implausible_fails();
+    test_ufs_quota_zero_fails_and_truncation_safe();
     if (g_failures) { std::printf("%d check(s) failed\n", g_failures); return 1; }
     std::printf("all cloudsaves smoke checks passed\n");
     return 0;

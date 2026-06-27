@@ -13,10 +13,10 @@ int32_t IClientApps::getAppData(uint32_t appId, const char* name, char* pChOut, 
 	return IpcOutbound::callAt<int32_t(*)(void*, uint32_t, const char*, char*, uint32_t)>(idx, this, appId, name, pChOut, outSize);
 }
 
-int32_t IClientApps::getAppDataSection(uint32_t appId, EAppInfoSection section, char* pChOut, uint32_t outSize)
+int32_t IClientApps::getAppDataSection(uint32_t appId, EAppInfoSection section, char* pChOut, uint32_t outSize, bool bSharedKVSymbols)
 {
 	static const int idx = VtableScan::slotOf("IClientApps", "GetAppDataSection");
-	return IpcOutbound::callAt<int32_t(*)(void*, uint32_t, uint32_t, char*, uint32_t, uint8_t)>(idx, this, appId, section, pChOut, outSize, 1);
+	return IpcOutbound::callAt<int32_t(*)(void*, uint32_t, uint32_t, char*, uint32_t, uint8_t)>(idx, this, appId, section, pChOut, outSize, bSharedKVSymbols ? 1 : 0);
 }
 
 bool IClientApps::requestAppInfoUpdate(uint32_t appId)
