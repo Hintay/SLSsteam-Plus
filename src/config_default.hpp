@@ -135,4 +135,7 @@ LogLevel = 2
 #Mode = "disable"
 # Storage root for Mode = "redirect". Default: ~/.local/share/SLSsteam/cloudsaves
 #StorePath = ""
+# Reveal the Steam Cloud UI in Properties for unlocked apps whose developer hid
+# it (hidecloudui=1). Cloud sync for such apps is enabled regardless of this.
+#ShowHiddenCloudUI = false
 )";

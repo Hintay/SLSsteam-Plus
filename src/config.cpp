@@ -902,6 +902,7 @@ bool CConfig::loadSettings()
 		{
 			modeStr = getSetting<std::string>(*cs, "Mode", "");
 			cloudStorePath = getSetting<std::string>(*cs, "StorePath", "");
+			cloudShowHiddenUI = getSetting<bool>(*cs, "ShowHiddenCloudUI", false);
 		}
 		if (!modeStr.empty())
 		{
@@ -919,6 +920,8 @@ bool CConfig::loadSettings()
 		}
 		cloudMode = mode;
 	}
+	if (node["CloudSaves"].as_table() == nullptr)
+		cloudShowHiddenUI = false;
 	blockTicketRequests = getSetting<bool>(node, "BlockTicketRequests", true);
 	offlineAchievementsSchema = getSetting<bool>(node, "OfflineAchievementsSchema", false);
 	extendedLogging = getSetting<bool>(node, "ExtendedLogging", false);
@@ -939,6 +942,7 @@ bool CConfig::loadSettings()
 	const char* modeName = cloudMode.get() == CloudMode::Redirect ? "redirect"
 	                     : cloudMode.get() == CloudMode::Off ? "off" : "disable";
 	g_pLog->info("CloudSaves.Mode: %s\n", modeName);
+	g_pLog->info("CloudSaves.ShowHiddenCloudUI: %i\n", cloudShowHiddenUI.get());
 	g_pLog->info("BlockTicketRequests: %i\n", blockTicketRequests.get());
 	g_pLog->info("OfflineAchievementsSchema: %i\n", offlineAchievementsSchema.get());
 	g_pLog->info("ExtendedLogging: %i\n", extendedLogging.get());

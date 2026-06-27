@@ -73,6 +73,7 @@ public:
 	MTVariable<bool> api;
 	MTVariable<CloudMode>    cloudMode;
 	MTVariable<std::string>  cloudStorePath;
+	MTVariable<bool> cloudShowHiddenUI;
 	MTVariable<bool> blockTicketRequests;
 	MTVariable<bool> offlineAchievementsSchema;
 	MTVariable<std::string> fakeEmail;
