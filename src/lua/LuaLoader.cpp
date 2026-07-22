@@ -942,10 +942,10 @@ namespace LuaLoader {
         // Later directories override earlier ones (for the same depot) because
         // the binding implementations use map assignment (last write wins).
 
-        // 1. System-wide plugin dir: {steam_root}/config/stplug-in/*.lua
+        // 1. System-wide plugin dir: {steam_root}/config/lua/*.lua
         const std::string steamRoot = getSteamRoot();
         if (!steamRoot.empty()) {
-            scanDirectory(steamRoot + "/config/stplug-in");
+            scanDirectory(steamRoot + "/config/lua");
         }
 
         // 2. User config dir: <config>/SLSsteam/lua/*.lua
