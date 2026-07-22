@@ -56,7 +56,7 @@ pattern = "89 45 ? 83 C4 10 83 EC 0C 89 F3"
 [Patterns.steamclient."CSteamMatchmakingServers::RequestInternetServerList"]
 follow = "PrologueUpwards"
 prologue = "E8 57 E5 89 55"
-pattern = "C7 04 24 50 03 00 00 E8 ? ? ? ? 5A 89 45 ? 59 FF B6 ? ? ? ? FF B6 ? ? ? ? FF B6 ? ? ? ? FF B6 ? ? ? ? FF B6 ? ? ? ? 6A 01"
+pattern = "C7 04 24 ? 03 00 00 E8 ? ? ? ? 5A 89 45 ? 59 FF B6 08 01 00 00 FF B6 04 01 00 00 FF B6 00 01 00 00 FF B6 FC 00 00 00 FF B6 F8 00 00 00 6A 01 6A 00 FF 75 18 56 50 E8"
 
 [Patterns.steamclient."CUser::CheckAppOwnership"]
 follow = "Relative"
@@ -88,7 +88,7 @@ pattern = "55 E8 ? ? ? ? 81 C5 ? ? ? ? 57 56 53 83 EC 0C 8B 7C 24 20 8B B7 ? 1B 
 [Patterns.steamclient."CUser::Offset_ConfigStore"]
 follow = "None"
 optional = true
-pattern = "8B 80 80 00 00 00 8D B0 ? ? ? ? 8B 80 ? ? ? ? 8B 40 14"
+pattern = "? ? ? ? ? ? 8D B0 ? ? ? ? 8B 80 ? ? ? ? 8B 40 14"
 
 [Patterns.steamclient."IClientAppManager::RunIPCFrame"]
 follow = "None"
@@ -111,15 +111,12 @@ pattern = "58 5A FF 74 24 ? 56 E8 ? ? ? ? 83 C4 10 85 C0 74"
 
 [Patterns.steamclient."IClientApps::RunIPCFrame"]
 follow = "None"
-# Entry prologue + sub esp,0x170 + one disp8 from body (sub esp,0x170 alone
-# matches 4 fns; the trailing `89 85 18 FF FF FF` (mov [ebp-0xE8], eax) makes
-# this unique to IClientApps's RunIPCFrame in the current build.
-pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 70 01 00 00 8B 45 08 8B 4D 0C 8B 7D 14 89 85 18 FF FF FF"
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 70 01 00 00 8B 45 08 8B 4D 0C 8B 7D 14 89 85 ? ? FF FF 8B 45 10 89 8D ? ? FF FF 89 F3 89 85 ? ? FF FF 65 A1 14 00 00 00 89 45 E4 31 C0 8D 85 ? FF FF FF 6A 04 50 51 E8 ? ? ? ? 8B 85 ? FF FF FF 83 C4 10 3D ? 9C 88 A6"
 
 [Patterns.steamclient."IClientRemoteStorage::RunIPCFrame"]
-follow = "None"
-# Entry prologue + unique sub esp, 0x560
-pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 60 05 00 00"
+follow = "PrologueUpwards"
+prologue = "E5 89 55"
+pattern = "6A 04 50 51 E8 ? ? ? ? 8B 85 ? FE FF FF 83 C4 10 3D ? ? ? ?"
 
 [Patterns.steamclient."IClientUser::RunIPCFrame"]
 follow = "None"
@@ -156,13 +153,13 @@ pattern = "75 ? 83 C4 1C 31 C0 5B 5E 5F 5D C3 ? ? ? ? ? 8B 44 24 ? 83 C4 1C 89 F
 
 [Patterns.steamclient."IClientUGC::RunIPCFrame"]
 follow = "None"
-# Entry prologue + unique sub esp, 0x5480
-pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 80 54 00 00"
+# Entry prologue + unique sub esp, 0x5480/0x5470
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC ? 54 00 00 8B 45 08 8B 4D 0C 8B 7D 14"
 
 [Patterns.steamclient."IClientUserStats::RunIPCFrame"]
 follow = "None"
-# Entry prologue + unique sub esp, 0x2C0
-pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC C0 02 00 00"
+# Entry prologue + sub esp,0x2C0 + stable local spill slots.
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC C0 02 00 00 8B 45 08 8B 4D 0C 8B 7D 14 89 85 40 FF FF FF 8B 45 10 89 8D 4C FF FF FF 89 F3 89 85 54 FF FF FF 65 A1 14 00 00 00 89 45 E4 31 C0 8D 85 5C FF FF FF 6A 04 50 51 E8 ? ? ? ? 8B 85 5C FF FF FF 83 C4 10 3D ? 65 6D 87"
 
 [Patterns.steamclient."IClientUtils::RunIPCFrame"]
 follow = "None"
@@ -223,4 +220,4 @@ pattern = "55 89 E5 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 81 EC 8C 00 00 00 8B 7D 08
 
 [Patterns.steamui."CUpdateManager::MarkAppChange"]
 follow = "None"
-pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C 8B 5D 10 8B 75 0C 89 45 D4 8B 80 E0 09 00 00 85 DB 0F 94 C1"
+pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C ? ? ? ? ? ? 89 45 D4 8B 80 E0 09 00 00 85 ? 0F 94 C1 85 ? 8B 00 0F 94 C2 09 D1 89 CF 85 C0 0F 85 ? ? 00 00 C7 45 DC 00 00 00 00 84 C9 74 0B 8D 65 F4 5B 5E 5F 5D C3 8D 76 00 8B 45 08 83 40 40 01 83 50 44 00 83 FE 07"
