@@ -11,12 +11,15 @@ struct MsgHdr {
 };
 static constexpr uint32_t kMsgHdrProtoFlag = 0x80000000u;
 
-// CCMConnection's network packet. Field layout (m_hConnection@0, m_pubData@+0x04,
-// m_cubData@+0x08) matches the CCMConnection::RecvPkt -> classifier disassembly
-// (reads [pkt+4]/[pkt+8]). Only the fields the request-code hook touches are modeled.
+// CCMConnection's network packet. Field layout (m_pubData@+0x0C, m_cubData@+0x10)
+// matches the CCMConnection::RecvPkt -> classifier disassembly of the 2026.10.14
+// client (reads [pkt+0xC]/[pkt+0x10]; older clients used +0x4/+0x8). Only the
+// fields the request-code and achievements hooks touch are modeled.
 struct CNetPacket {
-    uint32_t m_hConnection;   // +0x00
-    uint8_t* m_pubData;       // +0x04  — MsgHdr + protobuf header + protobuf body
-    uint32_t m_cubData;       // +0x08
-    // remaining fields (m_cRef, m_pubNetworkBuffer, m_pNext) intentionally omitted
+    uint8_t  __pad_0x0[0xC];  // +0x00
+    uint8_t* m_pubData;       // +0x0C  — MsgHdr + protobuf header + protobuf body
+    uint32_t m_cubData;       // +0x10
+    // remaining fields intentionally omitted
 };
+static_assert(offsetof(CNetPacket, m_pubData) == 0x0C, "CNetPacket::m_pubData offset");
+static_assert(offsetof(CNetPacket, m_cubData) == 0x10, "CNetPacket::m_cubData offset");

@@ -15,8 +15,8 @@ follow = "None"
 pattern = "55 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 83 EC 24 8B 44 24 44 8B 6C 24 38 8B 7C 24 3C 8B 74 24 40 89 44 24 10 8B 44 24 48 89 44 24 14"
 
 [Patterns.steamclient."BuildDepotDependency"]
-follow = "None"
-pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 2C 02 00 00 8B 45 08 89 85 1C FE FF FF 8B 45 10 89 85 24 FE FF FF"
+follow = "Relative"
+pattern = "E8 ? ? ? ? 83 C4 ? 84 C0 74 ? 8B 45 ? 85 C0 89 45"
 
 [Patterns.steamclient."BUpdateAppDownloadPlan"]
 follow = "None"
@@ -24,8 +24,9 @@ optional = true
 pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 81 EC DC 00 00 00 89 85 50 FF FF FF 8B 45 10 89 85 40 FF FF FF 8B 45 08 8B 40 04"
 
 [Patterns.steamclient."CAPIJob::GetPlayerStats"]
-follow = "Relative"
-pattern = "E8 ? ? ? ? 83 C4 10 89 C5 E9 ? ? ? ? ? ? 80 BE ? ? ? ? 00"
+follow = "PrologueUpwards"
+prologue = "E8 57 E5 89 55"
+pattern = "50 FF 52 14 89 C6 83 C4 20 84 C0 0F 84"
 
 [Patterns.steamclient."CProtoBufMsgBase::InitFromPacket"]
 follow = "Relative"
@@ -63,8 +64,9 @@ follow = "Relative"
 pattern = "E8 ? ? ? ? 88 45 ? 83 C4 10 84 C0 0F 84 ? ? ? ? 8B 45 ? 80 7D ? 00"
 
 [Patterns.steamclient."CUser::GetSubscribedApps"]
-follow = "Relative"
-pattern = "E8 ? ? ? ? 89 C6 83 C4 10 85 C0 0F 84 ? ? ? ? 8B 9D ? ? ? ? 39 D8"
+follow = "PrologueUpwards"
+prologue = "56 57 E5 89 55"
+pattern = "89 75 ? 0F 29 45"
 
 # Resolves to CSteamEngine::PostCallback
 [Patterns.steamclient."CUser::PostCallback"]
@@ -101,8 +103,9 @@ follow = "None"
 # (LibraryInject::isEnabled()); pattern drift here must not abort startup
 # for users without any [[LibraryInject.Libs]] configured.
 optional = true
-# Entry prologue + sub esp,0x170 + early argument-save sequence.
-pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC 70 01 00 00 8B 45 08 8B 4D 0C 8B 7D 14 89 85 38 FF FF FF"
+# Entry prologue + argument-save sequence + dispatch head; frame size, stack
+# slots and method hashes wildcarded (all change between client builds).
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC ? ? ? ? 8B 45 08 8B 4D 0C 8B 7D 14 89 85 ? ? ? ? 8B 45 10 89 8D ? ? ? ? 89 F3 89 85 ? ? ? ? 65 A1 ? ? ? ? 89 45 E4 31 C0 8D 85 ? ? ? ? 6A 04 50 51 E8 ? ? ? ? 8B 85 ? ? ? ? 83 C4 10 3D ? ? ? ? 0F 84 ? ? ? ? 0F 87 ? ? ? ? 3D ? ? ? ? 0F 84 ? ? ? ? 0F 86 ? ? ? ? 3D ? ? ? ? 0F 84 ? ? ? ? 0F 86 ? ? ? ? 3D ? ? ? ? 0F 85 ? ? ? ? E8 ? ? ? ? 8D 8E ? ? ? ? 83 EC 08 66 0F 6E C0 66 0F 6E CA 89 8D ? ? ? ? 8D 86 ? ? ? ? 66 0F 62 C1 66 0F 7E 85 ? ? ? ? 66 0F 73 D0 20 50 51 66 0F 7E 85 ? ? ? ? 89 85 ? ? ? ? E8 ? ? ? ? 83 C4 10 85 FF 74 ? 8B 07 83 EC 04 FF B5 ? ? ? ? FF B5 ? ? ? ? 57 FF 10 83 C4 10 8D 85 ? ? ? ?"
 
 [Patterns.steamclient."IClientAppManager::BCanRemotePlayTogether"]
 follow = "PrologueUpwards"
@@ -159,7 +162,7 @@ pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC ? 54 00 00 8B 45 08 
 [Patterns.steamclient."IClientUserStats::RunIPCFrame"]
 follow = "None"
 # Entry prologue + sub esp,0x2C0 + stable local spill slots.
-pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC C0 02 00 00 8B 45 08 8B 4D 0C 8B 7D 14 89 85 40 FF FF FF 8B 45 10 89 8D 4C FF FF FF 89 F3 89 85 54 FF FF FF 65 A1 14 00 00 00 89 45 E4 31 C0 8D 85 5C FF FF FF 6A 04 50 51 E8 ? ? ? ? 8B 85 5C FF FF FF 83 C4 10 3D ? 65 6D 87"
+pattern = "55 89 E5 57 56 E8 ? ? ? ? 81 C6 ? ? ? ? 53 81 EC C0 02 00 00 8B 45 08 8B 4D 0C 8B 7D 14 89 85 40 FF FF FF 8B 45 10 89 8D 4C FF FF FF 89 F3 89 85 54 FF FF FF 65 A1 14 00 00 00 89 45 E4 31 C0 8D 85 5C FF FF FF 6A 04 50 51 E8 ? ? ? ? 8B 85 5C FF FF FF 83 C4 10 3D ? ? ? ?"
 
 [Patterns.steamclient."IClientUtils::RunIPCFrame"]
 follow = "None"
@@ -179,7 +182,7 @@ pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C 8B 55 14 8B 75 0C 89
 [Patterns.steamclient."CConfigStore::SharedConfigWriteCallsite"]
 follow = "None"
 optional = true
-pattern = "8B 85 50 EF FF FF 83 C4 28 8B 80 ? 3B 00 00 FF B5 9C EF FF FF FF B5 8C EF FF FF 53 6A 00 6A 07 FF B5 D4 EE FF FF FF 10"
+pattern = "8B 85 ? ? ? ? 83 C4 28 8B 80 ? ? 00 00 FF B5 ? ? ? ? FF B5 ? ? ? ? 53 6A 00 6A 07 FF B5 ? ? ? ? FF 10"
 
 [Patterns.steamclient."CConfigStore::WriteVdfFile"]
 follow = "PrologueUpwards"
@@ -198,8 +201,9 @@ follow = "Relative"
 pattern = "E8 ? ? ? ? 8B 85 04 FF FF FF 83 C4 10 8B 40 54 89 85 FC FE FF FF"
 
 [Patterns.steamclient."CWebSocketConnection::BBuildAndAsyncSendFrame"]
-follow = "None"
-pattern = "55 89 E5 57 E8 ? ? ? ? 81 C7 ? ? ? ? 56 53 81 EC AC 00 00 00 8B 45 10"
+follow = "PrologueUpwards"
+prologue = "E8 57 E5 89 55"
+pattern = "89 C6 85 D2 78"
 
 [Patterns.steamclient."CCMConnection::RecvPkt"]
 follow = "None"
@@ -212,7 +216,7 @@ pattern = "8B 85 ? ? ? ? 8B 40 ? 85 C0 0F 84 ? ? ? ? 39 46"
 
 [Patterns.steamui."CSteamUIAppController::GetAppByID"]
 follow = "None"
-pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 4C 8B 5D 10 8B 75 08 89 45 C8 8B 80 E0 09 00 00"
+pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 4C 8B 5D 10 8B 75 08 89 45 C8 8B 80 ? ? 00 00"
 
 [Patterns.steamui."CSteamUIAppController::FillInAppOverview"]
 follow = "None"
@@ -220,4 +224,4 @@ pattern = "55 89 E5 57 56 53 E8 ? ? ? ? 81 C3 ? ? ? ? 81 EC 8C 00 00 00 8B 7D 08
 
 [Patterns.steamui."CUpdateManager::MarkAppChange"]
 follow = "None"
-pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C ? ? ? ? ? ? 89 45 D4 8B 80 E0 09 00 00 85 ? 0F 94 C1 85 ? 8B 00 0F 94 C2 09 D1 89 CF 85 C0 0F 85 ? ? 00 00 C7 45 DC 00 00 00 00 84 C9 74 0B 8D 65 F4 5B 5E 5F 5D C3 8D 76 00 8B 45 08 83 40 40 01 83 50 44 00 83 FE 07"
+pattern = "E8 ? ? ? ? 05 ? ? ? ? 55 89 E5 57 56 53 83 EC 3C ? ? ? ? ? ? 89 45 D4 8B 80 ? ? 00 00 85 ? 0F 94 C1 85 ? 8B 00 0F 94 C2 09 D1 89 CF 85 C0 0F 85 ? ? 00 00 C7 45 DC 00 00 00 00 84 C9 74 0B 8D 65 F4 5B 5E 5F 5D C3 8D 76 00 8B 45 08 83 40 40 01 83 50 44 00 83 FE 07"

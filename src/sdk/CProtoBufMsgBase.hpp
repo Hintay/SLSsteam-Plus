@@ -2,6 +2,7 @@
 
 #include "slssteam_messages.pb.h"
 
+#include <cstddef>
 #include <cstdint>
 
 enum EMsgType : uint16_t
@@ -32,19 +33,26 @@ enum EGameFlags
 class CProtoBufMsgBase
 {
 public:
-	char __pad_0x0[0x14];		//0x0
-	uint16_t type;				//0x14
-	char __pad_0x16[0x6];		//0x16
-	CMsgProtoBufHeader* header; //0x1C
-	void* __pBody;				//0x20
-	char __pad_0x24[0x8];		//0x24
-	
+	char __pad_0x0[0x1C];		//0x0
+	uint16_t type;				//0x1C
+	char __pad_0x1E[0x6];		//0x1E
+	CMsgProtoBufHeader* header; //0x24
+	void* __pBody;				//0x28
+	char __pad_0x2C[0x8];		//0x2C
+
 	uint32_t send();
 	template<typename T> constexpr T* getBody() const
 	{
 		return reinterpret_cast<T*>(__pBody);
 	}
-}; //0x2C
+}; //0x34
+
+// Steam client 2026.10.14 grew the base by 8 bytes (Send reads the header
+// from +0x24 and the body from +0x28, previously +0x1C/+0x20).
+static_assert(offsetof(CProtoBufMsgBase, type) == 0x1C, "CProtoBufMsgBase::type offset");
+static_assert(offsetof(CProtoBufMsgBase, header) == 0x24, "CProtoBufMsgBase::header offset");
+static_assert(offsetof(CProtoBufMsgBase, __pBody) == 0x28, "CProtoBufMsgBase::__pBody offset");
+static_assert(sizeof(CProtoBufMsgBase) == 0x34, "CProtoBufMsgBase size");
 
 
 //Replaced by actual dumped & protoc generated classes
