@@ -1,6 +1,14 @@
 # **SLSsteam-Plus - Steamclient Modification for Linux**
 ![](https://github.com/AceSLS/SLSsteam/blob/dev/res/banner.png?raw=true "SLSsteam")
 
+> [!WARNING]
+> **SLSsteam-Plus is deprecated and no longer maintained.** It will not be updated for new Steam client builds, and issues and pull requests are no longer handled. Please move to one of these:
+>
+> - **[SLSsteam](https://github.com/AceSLS/SLSsteam)** by AceSLS, the original project. Use it if you don't need this fork's Lua, depot key, or manifest features.
+> - **[Vapor Forge](https://github.com/Hintay/vapor-forge)**, a Rust rewrite that carries those features forward. It is not a drop-in replacement: it loads through `LD_AUDIT` and reads `~/.config/vapor-forge/config.toml` instead of `~/.config/SLSsteam`. Lua scripts in `{Steam}/config/lua/` are still loaded. See its README for build and install steps.
+>
+> This repository stays available read-only for reference.
+
 ## Index
 
 1. [About this hard fork](#about-this-hard-fork)
